@@ -120,6 +120,19 @@ type SceneData = {
   brollPlacement: "first" | "second";
 };
 type Scene = { id: string; name: string; data: SceneData };
+type ExportPreset = { name: string; note: string; width: number; height: number; fps: number; bitrate: number };
+// Shared render target so several scenes can be recorded into one video file.
+type SuperClip = {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  compositionCanvas: HTMLCanvasElement;
+  compositionContext: CanvasRenderingContext2D;
+  recorder: MediaRecorder;
+  audioContext: AudioContext;
+  audioDestination: MediaStreamAudioDestinationNode;
+  preset: ExportPreset;
+  sceneLabel: string;
+};
 
 const TEMPLATE_LABELS: Record<TemplateMode, string> = {
   ranking: "Ranking",
@@ -942,6 +955,8 @@ export default function Home() {
   const watermarkInteractionRef = useRef<{ type: "drag" | "resize"; pointerId: number; startX: number; startY: number; layout: CanvasElementLayout; stageWidth: number; stageHeight: number } | null>(null);
   const timelineSelectionRef = useRef<TimelineSelection | null>(null);
   const deleteTimelineRef = useRef<(target: ContextTarget) => void>(() => {});
+  const exportSceneRef = useRef<(superClip?: SuperClip) => Promise<void>>(async () => {});
+  const pendingSceneVideoUrlRef = useRef<string>("");
   const playbackMonitorRef = useRef<number | null>(null);
   const playbackMonitorUsesRVFC = useRef(false);
   const advancePlaybackRef = useRef<() => void>(() => {});
@@ -1883,8 +1898,12 @@ export default function Home() {
     setQuestionBox({ ...data.questionBox });
     setExtraTextLayers(data.extraTextLayers.map((layer) => ({ ...layer, style: { ...layer.style } })));
     setRankingScaleTarget(data.rankingScaleTarget);
+    // Recreate blob URLs from the durable Files: a scene's stored URL may have
+    // been revoked when another scene loaded its own media.
+    const nextVideoUrl = data.videoFile ? URL.createObjectURL(data.videoFile) : (data.videoUrl || undefined);
+    pendingSceneVideoUrlRef.current = nextVideoUrl || "";
     setVideoFile(data.videoFile);
-    setVideoUrl(data.videoUrl);
+    setVideoUrl(nextVideoUrl);
     knownVideoDurationRef.current = data.videoDuration;
     setVideoDuration(data.videoDuration);
     setSilentRanges(data.silentRanges.map((range) => ({ ...range })));
@@ -1897,14 +1916,14 @@ export default function Home() {
     setBrollClips(data.brollClips.map((clip) => ({ ...clip })));
     setTimelineMarkers(data.timelineMarkers.map((marker) => ({ ...marker })));
     setReactMediaFile(data.reactMediaFile);
-    setReactMediaUrl(data.reactMediaUrl);
+    setReactMediaUrl(data.reactMediaFile ? URL.createObjectURL(data.reactMediaFile) : data.reactMediaUrl);
     setReactMediaType(data.reactMediaType);
     setReactLayout({ ...data.reactLayout });
     setReactRemoveBackground(data.reactRemoveBackground);
     setReactMaskThreshold(data.reactMaskThreshold);
     setReactEdgeSoftness(data.reactEdgeSoftness);
     setPhotoReelFile(data.photoReelFile);
-    setPhotoReelUrl(data.photoReelUrl);
+    setPhotoReelUrl(data.photoReelFile ? URL.createObjectURL(data.photoReelFile) : data.photoReelUrl);
     setPhotoReelDuration(data.photoReelDuration);
     setCinematicLayout(data.cinematicLayout);
     setSplitDirection(data.splitDirection);
@@ -4651,35 +4670,43 @@ export default function Home() {
     context.restore();
   }
 
-  async function exportVideo() {
+  async function exportVideo(superClip?: SuperClip) {
     const video = videoRef.current;
     if (!video || !videoFile || !video.videoWidth) {
+      if (superClip) throw new Error(`A cena "${superClip.sceneLabel}" precisa de um vídeo`);
       setToast("Carregue um vídeo antes de exportar");
       return;
     }
-    if (templateMode === "react" && reactRemoveBackground && reactSegmentationStatus !== "ready") {
+    if (!superClip && templateMode === "react" && reactRemoveBackground && reactSegmentationStatus !== "ready") {
       setToast(reactSegmentationStatus === "error" ? "Ajuste o recorte ou desative o fundo transparente antes de exportar" : "Aguarde o recorte transparente ficar pronto");
       return;
     }
     if (!("MediaRecorder" in window)) {
+      if (superClip) throw new Error("Este navegador não oferece exportação local");
       setToast("Este navegador não oferece exportação local");
       return;
     }
-    setExporting(true);
-    setShowExportDialog(false);
-    setExportProgress(0);
-    const exportPreset = EXPORT_PRESETS[exportPresetId];
+    if (!superClip) {
+      setExporting(true);
+      setShowExportDialog(false);
+      setExportProgress(0);
+    }
+    const exportPreset = superClip ? superClip.preset : EXPORT_PRESETS[exportPresetId];
     await Promise.all([...Object.values(settings.textStyles), ...extraTextLayers.map((layer) => layer.style)].map((style) =>
       document.fonts.load(`${style.fontWeight} ${style.fontSize}px "${style.fontFamily}"`),
     ));
-    const canvas = document.createElement("canvas");
-    canvas.width = exportPreset.width;
-    canvas.height = exportPreset.height;
-    const context = canvas.getContext("2d")!;
-    const compositionCanvas = document.createElement("canvas");
-    compositionCanvas.width = canvas.width;
-    compositionCanvas.height = canvas.height;
-    const compositionContext = compositionCanvas.getContext("2d")!;
+    const canvas = superClip ? superClip.canvas : document.createElement("canvas");
+    if (!superClip) {
+      canvas.width = exportPreset.width;
+      canvas.height = exportPreset.height;
+    }
+    const context = superClip ? superClip.context : canvas.getContext("2d")!;
+    const compositionCanvas = superClip ? superClip.compositionCanvas : document.createElement("canvas");
+    if (!superClip) {
+      compositionCanvas.width = canvas.width;
+      compositionCanvas.height = canvas.height;
+    }
+    const compositionContext = superClip ? superClip.compositionContext : compositionCanvas.getContext("2d")!;
     const drawCinematicBroll = (auxiliaryVideo: HTMLVideoElement, focus: VideoFocus, clip: BrollClip) => {
       if (clip.placement === "overlay") {
         const requestedWidth = canvas.width * (clip.overlayWidth ?? 40) / 100;
@@ -5040,65 +5067,85 @@ export default function Home() {
       return { clip, video: auxiliaryVideo };
     }));
 
-    const canvasStream = canvas.captureStream(exportPreset.fps);
+    const canvasStream = superClip ? null : canvas.captureStream(exportPreset.fps);
     const captureVideo = video as HTMLVideoElement & { captureStream?: () => MediaStream; webkitCaptureStream?: () => MediaStream };
     const sourceStream = captureVideo.captureStream?.() || captureVideo.webkitCaptureStream?.();
+    const removedBefore = (time: number) => settings.removeSilence
+      ? silentRanges.reduce((total, range) => total + (range.start >= time ? 0 : Math.max(0, Math.min(time, range.end) - range.start)), 0)
+      : 0;
     let exportAudioContext: AudioContext | null = null;
     let startImportedAudio: (() => void) | null = null;
-    const audibleImportedAudios = importedAudios.filter((track) => track.volume > 0);
-    const hasImportedAudio = audibleImportedAudios.length > 0;
-    if ((!settings.removeAudio && sourceStream?.getAudioTracks().length) || overlayVideoClips.length || hasImportedAudio) {
-      exportAudioContext = new AudioContext();
-      await exportAudioContext.resume();
-      const audioDestination = exportAudioContext.createMediaStreamDestination();
+    if (superClip) {
+      // This scene's own audio flows into the shared destination; imported audios
+      // are global and handled once by the super-content orchestrator.
+      exportAudioContext = superClip.audioContext;
       if (!settings.removeAudio && sourceStream?.getAudioTracks().length) {
-        exportAudioContext.createMediaStreamSource(sourceStream).connect(audioDestination);
+        superClip.audioContext.createMediaStreamSource(sourceStream).connect(superClip.audioDestination);
       }
-      const removedBefore = (time: number) => settings.removeSilence
-        ? silentRanges.reduce((total, range) => total + (range.start >= time ? 0 : Math.max(0, Math.min(time, range.end) - range.start)), 0)
-        : 0;
       overlayVideoClips.forEach((clip) => {
-        const effectSource = exportAudioContext!.createBufferSource();
-        const effectGain = exportAudioContext!.createGain();
-        effectSource.buffer = createSoundEffectBuffer(exportAudioContext!, clip.sfx);
+        const effectSource = superClip.audioContext.createBufferSource();
+        const effectGain = superClip.audioContext.createGain();
+        effectSource.buffer = createSoundEffectBuffer(superClip.audioContext, clip.sfx);
         effectGain.gain.value = .72;
-        effectSource.connect(effectGain).connect(audioDestination);
-        effectSource.start(exportAudioContext!.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
+        effectSource.connect(effectGain).connect(superClip.audioDestination);
+        effectSource.start(superClip.audioContext.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
       });
-      if (hasImportedAudio) {
-        const starters: Array<{ source: AudioBufferSourceNode; offset: number }> = [];
-        for (const track of audibleImportedAudios) {
-          try {
-            if (!importedAudioBuffersRef.current[track.id]) {
-              importedAudioBuffersRef.current[track.id] = await exportAudioContext.decodeAudioData(await track.file.arrayBuffer());
-            }
-            const musicSource = exportAudioContext.createBufferSource();
-            const musicGain = exportAudioContext.createGain();
-            musicSource.buffer = importedAudioBuffersRef.current[track.id];
-            musicGain.gain.value = track.volume;
-            musicSource.connect(musicGain).connect(audioDestination);
-            starters.push({ source: musicSource, offset: track.offset });
-          } catch {
-            setToast(`Não foi possível decodificar o áudio "${track.name}"`);
-          }
+    } else {
+      const audibleImportedAudios = importedAudios.filter((track) => track.volume > 0);
+      const hasImportedAudio = audibleImportedAudios.length > 0;
+      if ((!settings.removeAudio && sourceStream?.getAudioTracks().length) || overlayVideoClips.length || hasImportedAudio) {
+        exportAudioContext = new AudioContext();
+        await exportAudioContext.resume();
+        const audioDestination = exportAudioContext.createMediaStreamDestination();
+        if (!settings.removeAudio && sourceStream?.getAudioTracks().length) {
+          exportAudioContext.createMediaStreamSource(sourceStream).connect(audioDestination);
         }
-        // Started together with the recorder so each imported track lines up with
-        // the beginning of the export; its own offset shifts it forward.
-        startImportedAudio = () => {
-          starters.forEach(({ source, offset }) => {
-            try { source.start(exportAudioContext!.currentTime + Math.max(0, offset)); } catch { /* already started */ }
-          });
-        };
+        overlayVideoClips.forEach((clip) => {
+          const effectSource = exportAudioContext!.createBufferSource();
+          const effectGain = exportAudioContext!.createGain();
+          effectSource.buffer = createSoundEffectBuffer(exportAudioContext!, clip.sfx);
+          effectGain.gain.value = .72;
+          effectSource.connect(effectGain).connect(audioDestination);
+          effectSource.start(exportAudioContext!.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
+        });
+        if (hasImportedAudio) {
+          const starters: Array<{ source: AudioBufferSourceNode; offset: number }> = [];
+          for (const track of audibleImportedAudios) {
+            try {
+              if (!importedAudioBuffersRef.current[track.id]) {
+                importedAudioBuffersRef.current[track.id] = await exportAudioContext.decodeAudioData(await track.file.arrayBuffer());
+              }
+              const musicSource = exportAudioContext.createBufferSource();
+              const musicGain = exportAudioContext.createGain();
+              musicSource.buffer = importedAudioBuffersRef.current[track.id];
+              musicGain.gain.value = track.volume;
+              musicSource.connect(musicGain).connect(audioDestination);
+              starters.push({ source: musicSource, offset: track.offset });
+            } catch {
+              setToast(`Não foi possível decodificar o áudio "${track.name}"`);
+            }
+          }
+          startImportedAudio = () => {
+            starters.forEach(({ source, offset }) => {
+              try { source.start(exportAudioContext!.currentTime + Math.max(0, offset)); } catch { /* already started */ }
+            });
+          };
+        }
+        audioDestination.stream.getAudioTracks().forEach((track) => canvasStream!.addTrack(track));
       }
-      audioDestination.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
     }
     const mimeCandidates = ["video/mp4;codecs=avc1.42E01E", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
     const mimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
-    const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: exportPreset.bitrate };
-    if (mimeType) recorderOptions.mimeType = mimeType;
-    const recorder = new MediaRecorder(canvasStream, recorderOptions);
+    let recorder: MediaRecorder;
     const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+    if (superClip) {
+      recorder = superClip.recorder;
+    } else {
+      const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: exportPreset.bitrate };
+      if (mimeType) recorderOptions.mimeType = mimeType;
+      recorder = new MediaRecorder(canvasStream!, recorderOptions);
+      recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+    }
     const originalTime = video.currentTime;
     const originalMuted = video.muted;
     const originalPlaybackRate = video.playbackRate;
@@ -5112,8 +5159,10 @@ export default function Home() {
 
     await new Promise<void>((resolve, reject) => {
       let raf = 0;
-      recorder.onerror = () => reject(new Error("Falha na gravação"));
-      recorder.onstop = () => resolve();
+      if (!superClip) {
+        recorder.onerror = () => reject(new Error("Falha na gravação"));
+        recorder.onstop = () => resolve();
+      }
       const render = () => {
         const exportSegment = exportMainSegments[exportMainIndex];
         if (exportSegment && video.currentTime >= exportSegment.end - .025) {
@@ -5126,7 +5175,9 @@ export default function Home() {
             cancelAnimationFrame(raf);
             reactExportVideo?.pause();
             exportBrollVideos.forEach(({ video: auxiliaryVideo }) => auxiliaryVideo.pause());
-            if (recorder.state !== "inactive") recorder.stop();
+            video.pause();
+            if (superClip) resolve();
+            else if (recorder.state !== "inactive") recorder.stop();
             return;
           }
         }
@@ -5278,10 +5329,20 @@ export default function Home() {
           video.play().catch(reject);
         }
       };
-      recorder.start(1000);
-      startImportedAudio?.();
+      if (!superClip) {
+        recorder.start(1000);
+        startImportedAudio?.();
+      }
       video.play().then(() => render()).catch(reject);
     });
+
+    if (superClip) {
+      video.currentTime = originalTime;
+      video.muted = originalMuted;
+      video.playbackRate = originalPlaybackRate;
+      video.loop = false;
+      return;
+    }
 
     const extension = mimeType.includes("mp4") ? "mp4" : "webm";
     const blob = new Blob(chunks, { type: mimeType || "video/webm" });
@@ -5302,6 +5363,114 @@ export default function Home() {
     if (activeFactoryProject) patchFactoryProject(activeFactoryProject.id, { status: "downloaded" });
     setToast(`${exportPreset.name} exportado em ${exportPreset.width} × ${exportPreset.height}`);
   }
+
+  // Waits until React committed the applied scene AND the <video> actually loaded
+  // that scene's source (matching src + real dimensions), so the export never
+  // reads the previous scene's still-loaded video.
+  function settleAfterSceneApply(): Promise<void> {
+    return new Promise((resolve) => {
+      const video = videoRef.current;
+      if (!video) { resolve(); return; }
+      const expectedUrl = pendingSceneVideoUrlRef.current;
+      const started = performance.now();
+      const check = () => {
+        const current = videoRef.current;
+        if (!current) { resolve(); return; }
+        const srcReady = !expectedUrl || current.src === expectedUrl || current.currentSrc === expectedUrl;
+        if (srcReady && current.readyState >= 2 && current.videoWidth > 0) { window.setTimeout(resolve, 120); return; }
+        if (performance.now() - started > 7000) { resolve(); return; }
+        requestAnimationFrame(check);
+      };
+      // Let React commit the new src first, then poll until it is really loaded.
+      requestAnimationFrame(() => requestAnimationFrame(check));
+    });
+  }
+
+  async function exportSuperContent() {
+    if (scenes.length < 2) { void exportVideo(); return; }
+    if (!("MediaRecorder" in window)) { setToast("Este navegador não oferece exportação local"); return; }
+    const activeIdBefore = activeSceneId;
+    const currentData = captureSceneData();
+    const orderedScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, data: currentData } : scene));
+    const missing = orderedScenes.find((scene) => !scene.data.videoFile);
+    if (missing) { setToast(`Adicione um vídeo na cena "${missing.name}" antes de gerar o super conteúdo`); return; }
+    setExporting(true);
+    setShowExportDialog(false);
+    setExportProgress(0);
+    const preset = EXPORT_PRESETS[exportPresetId];
+    const canvas = document.createElement("canvas");
+    canvas.width = preset.width;
+    canvas.height = preset.height;
+    const context = canvas.getContext("2d")!;
+    const compositionCanvas = document.createElement("canvas");
+    compositionCanvas.width = preset.width;
+    compositionCanvas.height = preset.height;
+    const compositionContext = compositionCanvas.getContext("2d")!;
+    const audioContext = new AudioContext();
+    await audioContext.resume();
+    const audioDestination = audioContext.createMediaStreamDestination();
+    const canvasStream = canvas.captureStream(preset.fps);
+    audioDestination.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+    const mimeType = ["video/mp4;codecs=avc1.42E01E", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+    const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: preset.bitrate };
+    if (mimeType) recorderOptions.mimeType = mimeType;
+    const recorder = new MediaRecorder(canvasStream, recorderOptions);
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+    const recorded = new Promise<Blob>((resolve, reject) => {
+      recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType || "video/webm" }));
+      recorder.onerror = () => reject(new Error("Falha na gravação"));
+    });
+    for (const track of importedAudios.filter((item) => item.volume > 0)) {
+      try {
+        if (!importedAudioBuffersRef.current[track.id]) importedAudioBuffersRef.current[track.id] = await audioContext.decodeAudioData(await track.file.arrayBuffer());
+        const source = audioContext.createBufferSource();
+        const gain = audioContext.createGain();
+        source.buffer = importedAudioBuffersRef.current[track.id];
+        gain.gain.value = track.volume;
+        source.connect(gain).connect(audioDestination);
+        source.start(audioContext.currentTime + Math.max(0, track.offset));
+      } catch { /* ignore a track that fails to decode */ }
+    }
+    recorder.start(1000);
+    const baseClip = { canvas, context, compositionCanvas, compositionContext, recorder, audioContext, audioDestination, preset };
+    let failed: string | null = null;
+    for (let index = 0; index < orderedScenes.length; index += 1) {
+      const scene = orderedScenes[index];
+      // Pause recording while the next scene loads so the transition gap does not
+      // add frozen frames to the final video.
+      if (index > 0) { try { if (recorder.state === "recording") recorder.pause(); } catch { /* pause unsupported */ } }
+      applySceneData(scene.data);
+      await settleAfterSceneApply();
+      try { if (recorder.state === "paused") recorder.resume(); } catch { /* resume unsupported */ }
+      try {
+        await exportSceneRef.current({ ...baseClip, sceneLabel: scene.name });
+      } catch (error) {
+        failed = error instanceof Error ? error.message : "Falha ao montar o super conteúdo";
+        break;
+      }
+      setExportProgress(Math.round(((index + 1) / orderedScenes.length) * 100));
+    }
+    if (recorder.state !== "inactive") recorder.stop();
+    let blob: Blob | null = null;
+    try { blob = await recorded; } catch { failed = failed || "Falha na gravação"; }
+    await audioContext.close().catch(() => undefined);
+    applySceneData(currentData);
+    setActiveSceneId(activeIdBefore);
+    setExporting(false);
+    setExportProgress(0);
+    if (failed || !blob) { setToast(failed || "Não foi possível gerar o super conteúdo"); return; }
+    const extension = mimeType.includes("mp4") ? "mp4" : "webm";
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `super-conteudo-${platform}-${preset.width}x${preset.height}.${extension}`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+    setToast(`Super conteúdo com ${orderedScenes.length} cenas exportado`);
+  }
+
+  exportSceneRef.current = exportVideo;
 
   return (
     <main className="app-shell">
@@ -6588,8 +6757,8 @@ export default function Home() {
               ))}
             </div>
             <div className="export-source-note"><span>Vídeo original</span><b>{videoRef.current?.videoWidth || 0} × {videoRef.current?.videoHeight || 0}</b></div>
-            <button className="button primary export-confirm" onClick={exportVideo}>Exportar em {EXPORT_PRESETS[exportPresetId].name}</button>
-            <small className="export-hint">HD é a opção mais leve. 2K e 4K usam mais memória e podem demorar mais.</small>
+            <button className="button primary export-confirm" onClick={() => (scenes.length > 1 ? exportSuperContent() : exportVideo())}>{scenes.length > 1 ? `Exportar super conteúdo (${scenes.length} cenas)` : `Exportar em ${EXPORT_PRESETS[exportPresetId].name}`}</button>
+            <small className="export-hint">{scenes.length > 1 ? "As cenas serão unidas em sequência num único vídeo." : "HD é a opção mais leve. 2K e 4K usam mais memória e podem demorar mais."}</small>
           </div>
         </div>
       )}
