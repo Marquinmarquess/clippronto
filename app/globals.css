@@ -618,6 +618,31 @@ button { color: inherit; }
 .timeline-context-menu button:hover { background: #34373e; }
 .timeline-context-menu button.danger { color: #ff8f8a; }
 .timeline-context-menu button.danger:hover { background: #4a2b2b; color: #ffb4b0; }
+
+/* Scenes bar (super conteúdo) */
+.scenes-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid #e3e4e8; border-radius: 12px; background: #fbfbfc; }
+.scenes-bar-label { flex: 0 0 auto; display: flex; flex-direction: column; gap: 1px; padding-right: 10px; border-right: 1px solid #e6e7eb; }
+.scenes-bar-label b { font-size: 11px; color: #1c1d22; letter-spacing: .2px; }
+.scenes-bar-label small { font-size: 9px; color: #8b8e97; }
+.scenes-list { flex: 1 1 auto; display: flex; align-items: center; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.scene-chip { flex: 0 0 auto; display: flex; align-items: center; height: 34px; border: 1.5px solid #e0e1e6; border-radius: 9px; background: #fff; overflow: hidden; }
+.scene-chip.active { border-color: #6d58f3; box-shadow: 0 0 0 2px rgba(109,88,243,.16); }
+.scene-chip-main { display: flex; align-items: center; gap: 7px; height: 100%; padding: 0 10px; border: none; background: transparent; cursor: pointer; }
+.scene-chip .scene-index { width: 18px; height: 18px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: #efeef9; color: #6d58f3; font-size: 9px; font-weight: 800; }
+.scene-chip.active .scene-index { background: #6d58f3; color: #fff; }
+.scene-chip .scene-name { font-size: 11px; font-weight: 700; color: #2a2b30; white-space: nowrap; }
+.scene-chip-actions { display: flex; align-items: center; height: 100%; border-left: 1px solid #ececf0; }
+.scene-chip-actions button { width: 22px; height: 100%; border: none; background: transparent; color: #9aa0a6; font-size: 12px; cursor: pointer; }
+.scene-chip-actions button:hover:not(:disabled) { background: #f1f1f4; color: #2a2b30; }
+.scene-chip-actions button:disabled { opacity: .3; cursor: default; }
+.scene-chip-actions button.danger:hover { background: #fdecea; color: #e5484d; }
+.scene-add { position: relative; flex: 0 0 auto; }
+.scene-add-btn { height: 34px; padding: 0 12px; border: 1.5px dashed #b9bac2; border-radius: 9px; background: #fff; color: #4b4d55; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.scene-add-btn:hover { border-color: #6d58f3; color: #6d58f3; }
+.scene-add-menu { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 150px; padding: 5px; border: 1px solid #e3e4e8; border-radius: 10px; background: #fff; box-shadow: 0 12px 28px rgba(0,0,0,.14); display: flex; flex-direction: column; gap: 2px; }
+.scene-add-title { padding: 4px 8px 6px; color: #9297a0; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
+.scene-add-menu button { height: 30px; padding: 0 9px; border: none; border-radius: 7px; background: transparent; color: #2a2b30; font-size: 11px; font-weight: 600; text-align: left; cursor: pointer; }
+.scene-add-menu button:hover { background: #f2f0fe; color: #6d58f3; }
 .timeline-ruler-row, .timeline-track-row { display: grid; grid-template-columns: 128px minmax(0, 1fr); }
 .timeline-scroll-area { width: 100%; min-height: 120px; flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; scrollbar-color: #5b5e67 #24262b; }
 .timeline-scaled-content { position: relative; min-width: 100%; }

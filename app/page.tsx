@@ -71,10 +71,65 @@ type TimelineSelection =
   | { kind: "ranking"; index: number }
   | { kind: "broll"; id: string }
   | { kind: "audio" }
-  | { kind: "imported-audio" }
+  | { kind: "imported-audio"; id: string }
   | { kind: "scene"; index: number }
   | { kind: "removed"; index: number };
 type ContextTarget = TimelineSelection | { kind: "watermark" };
+type ImportedAudioTrack = { id: string; name: string; file: File; url: string; samples: number[]; duration: number; volume: number; offset: number };
+// Full content snapshot of one scene (a template + its own media). Global effects
+// (watermark, imported audios) are NOT part of a scene — they span the project.
+type SceneData = {
+  mode: TemplateMode;
+  settings: EditorSettings;
+  products: Product[];
+  canvasLayouts: CanvasLayouts;
+  rankingSettings: RankingSettings;
+  rankingScenes: RankingScene[];
+  selectedRankingScene: number;
+  routineHeadings: RoutineHeadings;
+  questionBox: QuestionBoxContent;
+  extraTextLayers: ExtraTextLayer[];
+  rankingScaleTarget: number;
+  videoFile?: File;
+  videoUrl?: string;
+  videoDuration: number;
+  silentRanges: SilentRange[];
+  videoSplits: number[];
+  mainSegmentOrder: number[];
+  mainCrop: MainCrop;
+  mainVideoFocus: VideoFocus;
+  playbackSpeed: number;
+  audioExtracted: boolean;
+  brollClips: BrollClip[];
+  timelineMarkers: TimelineMarker[];
+  reactMediaFile?: File;
+  reactMediaUrl?: string;
+  reactMediaType: "video" | "image";
+  reactLayout: ReactOverlayLayout;
+  reactRemoveBackground: boolean;
+  reactMaskThreshold: number;
+  reactEdgeSoftness: number;
+  photoReelFile?: File;
+  photoReelUrl?: string;
+  photoReelDuration: number;
+  cinematicLayout: CinematicLayout;
+  splitDirection: SplitDirection;
+  splitPosition: number;
+  splitBarSize: number;
+  splitBarColor: string;
+  brollPlacement: "first" | "second";
+};
+type Scene = { id: string; name: string; data: SceneData };
+
+const TEMPLATE_LABELS: Record<TemplateMode, string> = {
+  ranking: "Ranking",
+  "timed-ranking": "Ranking animado",
+  free: "Livre",
+  cinematic: "Cinema",
+  routine: "Rotina",
+  react: "React",
+  "question-box": "Caixinha",
+};
 type CanvasElementId = "title" | "category" | "question-box" | "watermark" | `label-${number}` | `product-${number}` | `extra-text-${string}`;
 type WatermarkFormat = "full" | "compact";
 type CanvasElementLayout = { x: number; y: number; width: number; rotation?: number };
@@ -834,12 +889,10 @@ export default function Home() {
   const [timelineCollapsed, setTimelineCollapsed] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [waveformSamples, setWaveformSamples] = useState<number[]>([]);
-  const [importedAudioFile, setImportedAudioFile] = useState<File | null>(null);
-  const [importedAudioUrl, setImportedAudioUrl] = useState("");
-  const [importedAudioSamples, setImportedAudioSamples] = useState<number[]>([]);
-  const [importedAudioDuration, setImportedAudioDuration] = useState(0);
-  const [importedAudioVolume, setImportedAudioVolume] = useState(1);
-  const [importedAudioOffset, setImportedAudioOffset] = useState(0);
+  const [importedAudios, setImportedAudios] = useState<ImportedAudioTrack[]>([]);
+  const [scenes, setScenes] = useState<Scene[]>([]);
+  const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [showLinkMenu, setShowLinkMenu] = useState(false);
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkName, setWatermarkName] = useState("Seu Nome");
   const [watermarkHandle, setWatermarkHandle] = useState("@seuusuario");
@@ -881,10 +934,10 @@ export default function Home() {
   const [activeFactorySequence, setActiveFactorySequence] = useState<[FactoryClip, FactoryClip, FactoryClip] | null>(null);
   const [factoryPreparing, setFactoryPreparing] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const importedAudioRef = useRef<HTMLAudioElement>(null);
   const importedAudioInputRef = useRef<HTMLInputElement>(null);
-  const importedAudioBufferRef = useRef<AudioBuffer | null>(null);
-  const importedAudioDragRef = useRef<{ pointerId: number; startX: number; width: number; initialOffset: number } | null>(null);
+  const importedAudioElsRef = useRef<Record<string, HTMLAudioElement | null>>({});
+  const importedAudioBuffersRef = useRef<Record<string, AudioBuffer>>({});
+  const importedAudioDragRef = useRef<{ id: string; pointerId: number; startX: number; width: number; initialOffset: number } | null>(null);
   const watermarkPhotoInputRef = useRef<HTMLInputElement>(null);
   const watermarkInteractionRef = useRef<{ type: "drag" | "resize"; pointerId: number; startX: number; startY: number; layout: CanvasElementLayout; stageWidth: number; stageHeight: number } | null>(null);
   const timelineSelectionRef = useRef<TimelineSelection | null>(null);
@@ -984,9 +1037,11 @@ export default function Home() {
   }, [timelineZoom]);
 
   useEffect(() => {
-    const audio = importedAudioRef.current;
-    if (audio) audio.volume = clamp(importedAudioVolume, 0, 1);
-  }, [importedAudioVolume, importedAudioUrl]);
+    importedAudios.forEach((track) => {
+      const audio = importedAudioElsRef.current[track.id];
+      if (audio) audio.volume = clamp(track.volume, 0, 1);
+    });
+  }, [importedAudios]);
 
   useEffect(() => { timelineSelectionRef.current = timelineSelection; });
   useEffect(() => { deleteTimelineRef.current = deleteTimelineTarget; });
@@ -1046,7 +1101,7 @@ export default function Home() {
   useEffect(() => {
     syncImportedAudio(videoRef.current?.currentTime ?? currentTime, { force: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, importedAudioOffset, importedAudioUrl, importedAudioDuration, playbackSpeed]);
+  }, [isPlaying, importedAudios, playbackSpeed]);
 
   useEffect(() => {
     if (!videoUrl) return;
@@ -1760,6 +1815,171 @@ export default function Home() {
     setToast("Modelo Rotina Dia & Noite carregado");
   }
 
+  function activateTemplateMode(mode: TemplateMode) {
+    if (mode === "ranking") activateRankingTemplate();
+    else if (mode === "timed-ranking") activateTimedRankingTemplate();
+    else if (mode === "free") activateFreeTemplate();
+    else if (mode === "cinematic") activateCinematicTemplate();
+    else if (mode === "react") activateReactTemplate();
+    else if (mode === "routine") activateRoutineTemplate();
+    else activateQuestionBoxTemplate();
+  }
+
+  function captureSceneData(): SceneData {
+    return {
+      mode: templateMode,
+      settings: { ...settings, textStyles: { ...settings.textStyles }, products: settings.products.map((product) => ({ ...product })) },
+      products: products.map((product) => ({ ...product })),
+      canvasLayouts: { ...canvasLayouts },
+      rankingSettings: { ...rankingSettings, itemTimes: [...rankingSettings.itemTimes], itemEndTimes: [...rankingSettings.itemEndTimes], itemLayers: [...rankingSettings.itemLayers], itemScales: [...rankingSettings.itemScales] },
+      rankingScenes: rankingScenes.map((scene) => ({ ...scene })),
+      selectedRankingScene,
+      routineHeadings: { ...routineHeadings },
+      questionBox: { ...questionBox },
+      extraTextLayers: extraTextLayers.map((layer) => ({ ...layer, style: { ...layer.style } })),
+      rankingScaleTarget,
+      videoFile,
+      videoUrl,
+      videoDuration,
+      silentRanges: silentRanges.map((range) => ({ ...range })),
+      videoSplits: [...videoSplits],
+      mainSegmentOrder: [...mainSegmentOrder],
+      mainCrop: { ...mainCrop },
+      mainVideoFocus: { ...mainVideoFocus },
+      playbackSpeed,
+      audioExtracted,
+      brollClips: brollClips.map((clip) => ({ ...clip })),
+      timelineMarkers: timelineMarkers.map((marker) => ({ ...marker })),
+      reactMediaFile,
+      reactMediaUrl,
+      reactMediaType,
+      reactLayout: { ...reactLayout },
+      reactRemoveBackground,
+      reactMaskThreshold,
+      reactEdgeSoftness,
+      photoReelFile,
+      photoReelUrl,
+      photoReelDuration,
+      cinematicLayout,
+      splitDirection,
+      splitPosition,
+      splitBarSize,
+      splitBarColor,
+      brollPlacement,
+    };
+  }
+
+  function applySceneData(data: SceneData) {
+    const video = videoRef.current;
+    if (video && !video.paused) video.pause();
+    setTemplateMode(data.mode);
+    setSettings({ ...data.settings, textStyles: { ...data.settings.textStyles }, products: data.settings.products.map((product) => ({ ...product })) });
+    setProducts(data.products.map((product) => ({ ...product })));
+    setCanvasLayouts({ ...data.canvasLayouts });
+    setRankingSettings({ ...data.rankingSettings });
+    setRankingScenes(data.rankingScenes.map((scene) => ({ ...scene })));
+    setSelectedRankingScene(data.selectedRankingScene);
+    setRoutineHeadings({ ...data.routineHeadings });
+    setQuestionBox({ ...data.questionBox });
+    setExtraTextLayers(data.extraTextLayers.map((layer) => ({ ...layer, style: { ...layer.style } })));
+    setRankingScaleTarget(data.rankingScaleTarget);
+    setVideoFile(data.videoFile);
+    setVideoUrl(data.videoUrl);
+    knownVideoDurationRef.current = data.videoDuration;
+    setVideoDuration(data.videoDuration);
+    setSilentRanges(data.silentRanges.map((range) => ({ ...range })));
+    setVideoSplits([...data.videoSplits]);
+    setMainSegmentOrder([...data.mainSegmentOrder]);
+    setMainCrop({ ...data.mainCrop });
+    setMainVideoFocus({ ...data.mainVideoFocus });
+    setPlaybackSpeed(data.playbackSpeed);
+    setAudioExtracted(data.audioExtracted);
+    setBrollClips(data.brollClips.map((clip) => ({ ...clip })));
+    setTimelineMarkers(data.timelineMarkers.map((marker) => ({ ...marker })));
+    setReactMediaFile(data.reactMediaFile);
+    setReactMediaUrl(data.reactMediaUrl);
+    setReactMediaType(data.reactMediaType);
+    setReactLayout({ ...data.reactLayout });
+    setReactRemoveBackground(data.reactRemoveBackground);
+    setReactMaskThreshold(data.reactMaskThreshold);
+    setReactEdgeSoftness(data.reactEdgeSoftness);
+    setPhotoReelFile(data.photoReelFile);
+    setPhotoReelUrl(data.photoReelUrl);
+    setPhotoReelDuration(data.photoReelDuration);
+    setCinematicLayout(data.cinematicLayout);
+    setSplitDirection(data.splitDirection);
+    setSplitPosition(data.splitPosition);
+    setSplitBarSize(data.splitBarSize);
+    setSplitBarColor(data.splitBarColor);
+    setBrollPlacement(data.brollPlacement);
+    setSelectedElement(null);
+    setTimelineSelection(null);
+    setContextMenu(null);
+    setCurrentTime(0);
+    activeMainOrderIndexRef.current = 0;
+  }
+
+  function sceneName(mode: TemplateMode, position: number) {
+    return `Cena ${position} · ${TEMPLATE_LABELS[mode]}`;
+  }
+
+  function linkNewScene(mode: TemplateMode) {
+    const currentData = captureSceneData();
+    const firstSceneId = crypto.randomUUID();
+    const newSceneId = crypto.randomUUID();
+    setScenes((prev) => {
+      const base = prev.length
+        ? prev.map((scene) => (scene.id === activeSceneId ? { ...scene, data: currentData } : scene))
+        : [{ id: firstSceneId, name: sceneName(currentData.mode, 1), data: currentData }];
+      return [...base, { id: newSceneId, name: sceneName(mode, base.length + 1), data: currentData }];
+    });
+    setActiveSceneId(newSceneId);
+    activateTemplateMode(mode);
+    setToast(`Cena vinculada: ${TEMPLATE_LABELS[mode]} · edite e adicione o vídeo desta cena`);
+  }
+
+  function switchToScene(id: string) {
+    if (id === activeSceneId) return;
+    const target = scenes.find((scene) => scene.id === id);
+    if (!target) return;
+    const currentData = captureSceneData();
+    setScenes((prev) => prev.map((scene) => (scene.id === activeSceneId ? { ...scene, data: currentData } : scene)));
+    applySceneData(target.data);
+    setActiveSceneId(id);
+  }
+
+  function removeScene(id: string) {
+    const index = scenes.findIndex((scene) => scene.id === id);
+    if (index < 0) return;
+    const remaining = scenes.filter((scene) => scene.id !== id);
+    if (remaining.length <= 1) {
+      // Back to a single-scene project (no scenes layer).
+      setScenes([]);
+      setActiveSceneId(null);
+      if (id === activeSceneId && remaining[0]) applySceneData(remaining[0].data);
+      setToast("Cena removida");
+      return;
+    }
+    if (id === activeSceneId) {
+      const fallback = remaining[Math.max(0, index - 1)] || remaining[0];
+      applySceneData(fallback.data);
+      setActiveSceneId(fallback.id);
+    }
+    setScenes(remaining.map((scene, position) => ({ ...scene, name: scene.name.replace(/^Cena \d+/, `Cena ${position + 1}`) })));
+    setToast("Cena removida");
+  }
+
+  function moveScene(id: string, direction: -1 | 1) {
+    setScenes((prev) => {
+      const index = prev.findIndex((scene) => scene.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next.map((scene, position) => ({ ...scene, name: scene.name.replace(/^Cena \d+/, `Cena ${position + 1}`) }));
+    });
+  }
+
   function addCinematicText() {
     addExtraText();
   }
@@ -2360,57 +2580,59 @@ export default function Home() {
       setToast("Escolha um arquivo de áudio (MP3, WAV, M4A…)");
       return;
     }
-    if (importedAudioUrl) URL.revokeObjectURL(importedAudioUrl);
-    importedAudioBufferRef.current = null;
-    setImportedAudioFile(file);
-    setImportedAudioUrl(URL.createObjectURL(file));
-    setImportedAudioOffset(0);
-    setImportedAudioVolume(1);
-    setImportedAudioSamples([]);
-    setImportedAudioDuration(0);
+    const id = crypto.randomUUID();
+    const track: ImportedAudioTrack = { id, name: file.name, file, url: URL.createObjectURL(file), samples: [], duration: 0, volume: 1, offset: 0 };
+    setImportedAudios((current) => [...current, track]);
     setTimelineCollapsed(false);
     setToast(`Áudio "${file.name}" importado`);
     const waveform = await buildWaveform(file);
-    setImportedAudioSamples(waveform.samples);
-    setImportedAudioDuration(waveform.duration);
+    setImportedAudios((current) => current.map((item) => item.id === id ? { ...item, samples: waveform.samples, duration: waveform.duration } : item));
   }
 
-  function removeImportedAudio() {
-    if (importedAudioUrl) URL.revokeObjectURL(importedAudioUrl);
-    importedAudioBufferRef.current = null;
-    const audio = importedAudioRef.current;
+  function updateImportedAudio(id: string, patch: Partial<ImportedAudioTrack>) {
+    setImportedAudios((current) => current.map((track) => track.id === id ? { ...track, ...patch } : track));
+  }
+
+  function removeImportedAudio(id: string) {
+    const audio = importedAudioElsRef.current[id];
     if (audio) audio.pause();
-    setImportedAudioFile(null);
-    setImportedAudioUrl("");
-    setImportedAudioSamples([]);
-    setImportedAudioDuration(0);
-    setImportedAudioOffset(0);
-    setTimelineSelection((current) => (current?.kind === "imported-audio" ? null : current));
+    delete importedAudioElsRef.current[id];
+    delete importedAudioBuffersRef.current[id];
+    setImportedAudios((current) => {
+      const track = current.find((item) => item.id === id);
+      if (track) URL.revokeObjectURL(track.url);
+      return current.filter((item) => item.id !== id);
+    });
+    setTimelineSelection((current) => (current?.kind === "imported-audio" && current.id === id ? null : current));
   }
 
   function syncImportedAudio(videoTime: number, options?: { force?: boolean }) {
-    const audio = importedAudioRef.current;
-    if (!audio || !importedAudioUrl) return;
-    const target = videoTime - importedAudioOffset;
-    if (target < -.05 || target > importedAudioDuration + .05) {
-      if (!audio.paused) audio.pause();
-      return;
-    }
-    const clampedTarget = clamp(target, 0, Math.max(0, importedAudioDuration - .01));
-    if (options?.force || Math.abs(audio.currentTime - clampedTarget) > .28) audio.currentTime = clampedTarget;
-    audio.playbackRate = playbackSpeed;
-    if (isPlaying && audio.paused) audio.play().catch(() => undefined);
-    else if (!isPlaying && !audio.paused) audio.pause();
+    importedAudios.forEach((track) => {
+      const audio = importedAudioElsRef.current[track.id];
+      if (!audio) return;
+      const target = videoTime - track.offset;
+      if (target < -.05 || target > track.duration + .05) {
+        if (!audio.paused) audio.pause();
+        return;
+      }
+      const clampedTarget = clamp(target, 0, Math.max(0, track.duration - .01));
+      if (options?.force || Math.abs(audio.currentTime - clampedTarget) > .28) audio.currentTime = clampedTarget;
+      audio.playbackRate = playbackSpeed;
+      audio.volume = clamp(track.volume, 0, 1);
+      if (isPlaying && audio.paused) audio.play().catch(() => undefined);
+      else if (!isPlaying && !audio.paused) audio.pause();
+    });
   }
 
-  function beginImportedAudioDrag(event: React.PointerEvent<HTMLElement>) {
+  function beginImportedAudioDrag(event: React.PointerEvent<HTMLElement>, id: string) {
     const track = event.currentTarget.closest(".timeline-track");
-    if (!(track instanceof HTMLElement)) return;
+    const audioTrack = importedAudios.find((item) => item.id === id);
+    if (!(track instanceof HTMLElement) || !audioTrack) return;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setTimelineSelection({ kind: "imported-audio" });
-    importedAudioDragRef.current = { pointerId: event.pointerId, startX: event.clientX, width: track.getBoundingClientRect().width, initialOffset: importedAudioOffset };
+    setTimelineSelection({ kind: "imported-audio", id });
+    importedAudioDragRef.current = { id, pointerId: event.pointerId, startX: event.clientX, width: track.getBoundingClientRect().width, initialOffset: audioTrack.offset };
   }
 
   function moveImportedAudioDrag(event: React.PointerEvent<HTMLElement>) {
@@ -2418,7 +2640,7 @@ export default function Home() {
     if (!drag || drag.pointerId !== event.pointerId || !videoDuration) return;
     event.preventDefault();
     const deltaTime = ((event.clientX - drag.startX) / Math.max(1, drag.width)) * videoDuration;
-    setImportedAudioOffset(clamp(drag.initialOffset + deltaTime, 0, Math.max(.2, videoDuration)));
+    updateImportedAudio(drag.id, { offset: clamp(drag.initialOffset + deltaTime, 0, Math.max(.2, videoDuration)) });
   }
 
   function endImportedAudioDrag(event: React.PointerEvent<HTMLElement>) {
@@ -2523,7 +2745,7 @@ export default function Home() {
         break;
       case "broll": removeBroll(target.id); break;
       case "audio": pushEditorHistory(); setAudioExtracted(false); break;
-      case "imported-audio": removeImportedAudio(); break;
+      case "imported-audio": removeImportedAudio(target.id); break;
       case "removed": restoreCut(target.index); break;
       case "watermark": setWatermarkEnabled(false); break;
       case "factory": setToast("Os clipes da Fábrica são ajustados pelas alças, não removidos aqui"); break;
@@ -2539,7 +2761,7 @@ export default function Home() {
       case "scene": return rankingScenes[target.index]?.title || `Quadro ${target.index + 1}`;
       case "broll": return brollClips.find((clip) => clip.id === target.id)?.name || "Sobreposição";
       case "audio": return "Áudio extraído";
-      case "imported-audio": return importedAudioFile?.name || "Áudio importado";
+      case "imported-audio": return importedAudios.find((track) => track.id === target.id)?.name || "Áudio importado";
       case "removed": return "Trecho removido";
       case "watermark": return "Minha marca";
       case "factory": return "Clipe da Fábrica";
@@ -2566,7 +2788,7 @@ export default function Home() {
       if (clip) actions.push({ label: "Ir ao início", onClick: () => { seekVideo(clip.timelineStart); close(); } });
     }
     if (target.kind === "imported-audio") {
-      actions.push({ label: "Começar no cursor", onClick: () => { setImportedAudioOffset(clamp(currentTime, 0, Math.max(.2, videoDuration))); close(); } });
+      actions.push({ label: "Começar no cursor", onClick: () => { updateImportedAudio(target.id, { offset: clamp(currentTime, 0, Math.max(.2, videoDuration)) }); close(); } });
     }
     if (target.kind === "audio") {
       actions.push({ label: settings.removeAudio ? "Ativar áudio" : "Silenciar áudio", onClick: () => { pushEditorHistory(); setSettings((current) => ({ ...current, removeAudio: !current.removeAudio })); close(); } });
@@ -4823,7 +5045,8 @@ export default function Home() {
     const sourceStream = captureVideo.captureStream?.() || captureVideo.webkitCaptureStream?.();
     let exportAudioContext: AudioContext | null = null;
     let startImportedAudio: (() => void) | null = null;
-    const hasImportedAudio = Boolean(importedAudioFile && importedAudioVolume > 0);
+    const audibleImportedAudios = importedAudios.filter((track) => track.volume > 0);
+    const hasImportedAudio = audibleImportedAudios.length > 0;
     if ((!settings.removeAudio && sourceStream?.getAudioTracks().length) || overlayVideoClips.length || hasImportedAudio) {
       exportAudioContext = new AudioContext();
       await exportAudioContext.resume();
@@ -4842,25 +5065,30 @@ export default function Home() {
         effectSource.connect(effectGain).connect(audioDestination);
         effectSource.start(exportAudioContext!.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
       });
-      if (hasImportedAudio && importedAudioFile) {
-        try {
-          if (!importedAudioBufferRef.current) {
-            importedAudioBufferRef.current = await exportAudioContext.decodeAudioData(await importedAudioFile.arrayBuffer());
+      if (hasImportedAudio) {
+        const starters: Array<{ source: AudioBufferSourceNode; offset: number }> = [];
+        for (const track of audibleImportedAudios) {
+          try {
+            if (!importedAudioBuffersRef.current[track.id]) {
+              importedAudioBuffersRef.current[track.id] = await exportAudioContext.decodeAudioData(await track.file.arrayBuffer());
+            }
+            const musicSource = exportAudioContext.createBufferSource();
+            const musicGain = exportAudioContext.createGain();
+            musicSource.buffer = importedAudioBuffersRef.current[track.id];
+            musicGain.gain.value = track.volume;
+            musicSource.connect(musicGain).connect(audioDestination);
+            starters.push({ source: musicSource, offset: track.offset });
+          } catch {
+            setToast(`Não foi possível decodificar o áudio "${track.name}"`);
           }
-          const musicBuffer = importedAudioBufferRef.current;
-          const musicSource = exportAudioContext.createBufferSource();
-          const musicGain = exportAudioContext.createGain();
-          musicSource.buffer = musicBuffer;
-          musicGain.gain.value = importedAudioVolume;
-          musicSource.connect(musicGain).connect(audioDestination);
-          // Started together with the recorder so the imported track lines up
-          // with the beginning of the export; the offset shifts it forward.
-          startImportedAudio = () => {
-            try { musicSource.start(exportAudioContext!.currentTime + Math.max(0, importedAudioOffset)); } catch { /* already started */ }
-          };
-        } catch {
-          setToast("Não foi possível decodificar o áudio importado");
         }
+        // Started together with the recorder so each imported track lines up with
+        // the beginning of the export; its own offset shifts it forward.
+        startImportedAudio = () => {
+          starters.forEach(({ source, offset }) => {
+            try { source.start(exportAudioContext!.currentTime + Math.max(0, offset)); } catch { /* already started */ }
+          });
+        };
       }
       audioDestination.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
     }
@@ -5202,6 +5430,38 @@ export default function Home() {
             <div className="canvas-toolbar-actions">
               {showSafeZone && (unsafeTargets.length > 0 ? <span className="margin-warning">⚠ {unsafeTargets.length} fora da margem</span> : <span className="margin-safe">✓ Área segura</span>)}
               <button className={`safe-zone-toggle ${showSafeZone ? "active" : ""}`} onClick={() => setShowSafeZone((current) => !current)}>{showSafeZone ? "Ocultar safe zone" : "Ver safe zone"}</button>
+            </div>
+          </div>
+
+          <div className="scenes-bar">
+            <div className="scenes-bar-label"><b>Cenas</b><small>{scenes.length > 1 ? `${scenes.length} modelos em sequência` : "Vincule modelos p/ um super conteúdo"}</small></div>
+            <div className="scenes-list">
+              {scenes.length === 0 ? (
+                <div className="scene-chip active"><span className="scene-index">1</span><span className="scene-name">{TEMPLATE_LABELS[templateMode]}</span></div>
+              ) : scenes.map((scene, index) => (
+                <div key={scene.id} className={`scene-chip ${scene.id === activeSceneId ? "active" : ""}`}>
+                  <button className="scene-chip-main" onClick={() => switchToScene(scene.id)} title="Editar esta cena">
+                    <span className="scene-index">{index + 1}</span>
+                    <span className="scene-name">{TEMPLATE_LABELS[scene.id === activeSceneId ? templateMode : scene.data.mode]}</span>
+                  </button>
+                  <span className="scene-chip-actions">
+                    <button onClick={() => moveScene(scene.id, -1)} disabled={index === 0} aria-label="Mover para trás">‹</button>
+                    <button onClick={() => moveScene(scene.id, 1)} disabled={index === scenes.length - 1} aria-label="Mover para frente">›</button>
+                    <button className="danger" onClick={() => removeScene(scene.id)} aria-label="Remover cena">✕</button>
+                  </span>
+                </div>
+              ))}
+              <div className="scene-add">
+                <button className="scene-add-btn" onClick={() => setShowLinkMenu((value) => !value)}>＋ Vincular modelo</button>
+                {showLinkMenu && (
+                  <div className="scene-add-menu">
+                    <div className="scene-add-title">Adicionar em sequência</div>
+                    {(["ranking", "timed-ranking", "react", "question-box", "routine", "free", "cinematic"] as TemplateMode[]).map((mode) => (
+                      <button key={mode} onClick={() => { setShowLinkMenu(false); linkNewScene(mode); }}>{TEMPLATE_LABELS[mode]}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
           <div className="phone-frame">
@@ -5909,10 +6169,9 @@ export default function Home() {
               <button className="tool-button editor-action" onClick={() => deleteMainSide("right")} title="Excluir do cursor até o fim do trecho">Excluir →</button>
               <button className="tool-button editor-action danger" onClick={() => timelineSelection?.kind === "main" ? removeMainSegment(timelineSelection.index) : setToast("Selecione um trecho do vídeo para excluir")} title="Excluir o trecho selecionado">Excluir</button>
               <button className={`tool-button editor-action ${audioExtracted ? "active" : ""}`} onClick={extractMainAudio} disabled={audioExtracted} title="Separar o áudio do vídeo">♪ Extrair áudio</button>
-              <button className={`tool-button editor-action ${importedAudioFile ? "active" : ""}`} onClick={() => importedAudioInputRef.current?.click()} title="Importar música ou locução para tocar por cima do vídeo">♫ {importedAudioFile ? "Trocar áudio" : "Importar áudio"}</button>
-              <input ref={importedAudioInputRef} type="file" accept="audio/*" hidden onChange={(event) => { chooseImportedAudio(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-              <audio ref={importedAudioRef} src={importedAudioUrl || undefined} preload="auto" />
-              {importedAudioFile && <button className="tool-button editor-action danger" onClick={removeImportedAudio} title="Remover o áudio importado">♫ Remover</button>}
+              <button className={`tool-button editor-action ${importedAudios.length ? "active" : ""}`} onClick={() => importedAudioInputRef.current?.click()} title="Importar música ou locução para tocar por cima do vídeo (pode adicionar vários)">♫ Importar áudio{importedAudios.length ? ` (${importedAudios.length})` : ""}</button>
+              <input ref={importedAudioInputRef} type="file" accept="audio/*" multiple hidden onChange={(event) => { Array.from(event.target.files || []).forEach((file) => chooseImportedAudio(file)); event.currentTarget.value = ""; }} />
+              {importedAudios.map((track) => <audio key={track.id} ref={(element) => { importedAudioElsRef.current[track.id] = element; }} src={track.url} preload="auto" />)}
               <button className={`tool-button editor-action ${watermarkEnabled ? "active" : ""}`} onClick={toggleWatermark} title="Selo com seu nome, @ e verificado para marcar o vídeo">✔ Minha marca</button>
               <label className="timeline-speed-control" title="Velocidade do vídeo e do áudio"><span>Speed</span><select value={playbackSpeed} onChange={(event) => changePlaybackSpeed(Number(event.target.value))}>{[.25, .5, .75, 1, 1.25, 1.5, 2, 3, 4].map((speed) => <option key={speed} value={speed}>{speed}×</option>)}</select></label>
               <button className="tool-button editor-action" onClick={addTimelineMarker} title="Adicionar marcador na posição do cursor">◆ Marcador</button>
@@ -5999,14 +6258,18 @@ export default function Home() {
                 <button onClick={() => { pushEditorHistory(); setSettings((current) => ({ ...current, removeAudio: !current.removeAudio })); }}>{settings.removeAudio ? "Ativar áudio" : "Silenciar áudio"}</button>
                 <button className="danger" onClick={() => { pushEditorHistory(); setAudioExtracted(false); setTimelineSelection(null); }}>Excluir faixa</button>
               </>}
-              {timelineSelection.kind === "imported-audio" && importedAudioFile && <>
-                <div className="selected-clip-name imported-audio"><span>♫</span><div><strong>{importedAudioFile.name}</strong><small>Começa em {formatTime(importedAudioOffset)} · {formatTime(importedAudioDuration)} · toca por cima</small></div></div>
-                <label className="inspector-slider"><span>Volume {Math.round(importedAudioVolume * 100)}%</span><input type="range" min="0" max="1" step=".02" value={importedAudioVolume} onChange={(event) => setImportedAudioVolume(Number(event.target.value))} /></label>
-                <label className="inspector-slider"><span>Início {formatTime(importedAudioOffset)}</span><input type="range" min="0" max={Math.max(.2, videoDuration)} step=".1" value={Math.min(importedAudioOffset, Math.max(.2, videoDuration))} onChange={(event) => setImportedAudioOffset(Number(event.target.value))} /></label>
-                <button onClick={() => setImportedAudioOffset(0)}>Início no 0s</button>
-                <button onClick={() => setImportedAudioOffset(clamp(currentTime, 0, Math.max(.2, videoDuration)))}>Começar no cursor</button>
-                <button className="danger" onClick={removeImportedAudio}>Remover áudio</button>
-              </>}
+              {timelineSelection.kind === "imported-audio" && (() => {
+                const track = importedAudios.find((item) => item.id === timelineSelection.id);
+                if (!track) return null;
+                return <>
+                  <div className="selected-clip-name imported-audio"><span>♫</span><div><strong>{track.name}</strong><small>Começa em {formatTime(track.offset)} · {formatTime(track.duration)} · toca por cima</small></div></div>
+                  <label className="inspector-slider"><span>Volume {Math.round(track.volume * 100)}%</span><input type="range" min="0" max="1" step=".02" value={track.volume} onChange={(event) => updateImportedAudio(track.id, { volume: Number(event.target.value) })} /></label>
+                  <label className="inspector-slider"><span>Início {formatTime(track.offset)}</span><input type="range" min="0" max={Math.max(.2, videoDuration)} step=".1" value={Math.min(track.offset, Math.max(.2, videoDuration))} onChange={(event) => updateImportedAudio(track.id, { offset: Number(event.target.value) })} /></label>
+                  <button onClick={() => updateImportedAudio(track.id, { offset: 0 })}>Início no 0s</button>
+                  <button onClick={() => updateImportedAudio(track.id, { offset: clamp(currentTime, 0, Math.max(.2, videoDuration)) })}>Começar no cursor</button>
+                  <button className="danger" onClick={() => removeImportedAudio(track.id)}>Remover áudio</button>
+                </>;
+              })()}
               {timelineSelection.kind === "ranking" && selectedRankingIndex !== null && <>
                 <div className="selected-clip-name ranking"><span>{selectedRankingIndex + 1}–</span><div><strong>{products[selectedRankingIndex]?.name || `Item ${selectedRankingIndex + 1}`}</strong><small>{formatTime(rankingStart(selectedRankingIndex))}–{formatTime(rankingEnd(selectedRankingIndex))} · camada {(rankingSettings.itemLayers[selectedRankingIndex] ?? 0) + 1}</small></div></div>
                 <button onClick={() => seekVideo(rankingStart(selectedRankingIndex))}>Ir ao início</button>
@@ -6132,27 +6395,29 @@ export default function Home() {
             </button>
           </div>}
 
-          {importedAudioFile && <div className="timeline-track-row imported-audio-row">
-            <div className="track-label"><span className="track-icon imported-audio">♫</span><div><strong>ÁUDIO IMPORTADO</strong><small>{Math.round(importedAudioVolume * 100)}% · começa em {formatTime(importedAudioOffset)}</small></div></div>
-            <div className="timeline-track imported-audio-track" onClick={seekFromTimeline}>
-              <div
-                className={`imported-audio-clip ${timelineSelection?.kind === "imported-audio" ? "selected" : ""}`}
-                style={{ left: `${clamp(importedAudioOffset / (videoDuration || 1), 0, 1) * 100}%`, width: `${clamp((importedAudioDuration || videoDuration) / (videoDuration || 1), .02, 1) * 100}%` }}
-                role="button"
-                tabIndex={0}
-                onPointerDown={beginImportedAudioDrag}
-                onPointerMove={moveImportedAudioDrag}
-                onPointerUp={endImportedAudioDrag}
-                onPointerCancel={endImportedAudioDrag}
-                onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "imported-audio" }); }}
-                onContextMenu={(event) => openContextMenu(event, { kind: "imported-audio" })}
-                title={`${importedAudioFile.name} · começa em ${formatTime(importedAudioOffset)} · arraste para mover`}
-              >
-                <span className="imported-audio-name">♫ {importedAudioFile.name}</span>
-                {importedAudioSamples.length > 0 && <WaveformCanvas samples={importedAudioSamples} className="imported-audio-waveform" color="#c9a6ff" quietColor="#6f5f9c" />}
+          {importedAudios.map((track, trackIndex) => (
+            <div className="timeline-track-row imported-audio-row" key={track.id}>
+              <div className="track-label"><span className="track-icon imported-audio">♫</span><div><strong>{importedAudios.length > 1 ? `ÁUDIO ${trackIndex + 1}` : "ÁUDIO IMPORTADO"}</strong><small>{Math.round(track.volume * 100)}% · começa em {formatTime(track.offset)}</small></div></div>
+              <div className="timeline-track imported-audio-track" onClick={seekFromTimeline}>
+                <div
+                  className={`imported-audio-clip ${timelineSelection?.kind === "imported-audio" && timelineSelection.id === track.id ? "selected" : ""}`}
+                  style={{ left: `${clamp(track.offset / (videoDuration || 1), 0, 1) * 100}%`, width: `${clamp((track.duration || videoDuration) / (videoDuration || 1), .02, 1) * 100}%` }}
+                  role="button"
+                  tabIndex={0}
+                  onPointerDown={(event) => beginImportedAudioDrag(event, track.id)}
+                  onPointerMove={moveImportedAudioDrag}
+                  onPointerUp={endImportedAudioDrag}
+                  onPointerCancel={endImportedAudioDrag}
+                  onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "imported-audio", id: track.id }); }}
+                  onContextMenu={(event) => openContextMenu(event, { kind: "imported-audio", id: track.id })}
+                  title={`${track.name} · começa em ${formatTime(track.offset)} · arraste para mover`}
+                >
+                  <span className="imported-audio-name">♫ {track.name}</span>
+                  {track.samples.length > 0 && <WaveformCanvas samples={track.samples} className="imported-audio-waveform" color="#c9a6ff" quietColor="#6f5f9c" />}
+                </div>
               </div>
             </div>
-          </div>}
+          ))}
 
           {templateMode === "ranking" && (
             <div className="timeline-track-row ranking-scenes-row">
