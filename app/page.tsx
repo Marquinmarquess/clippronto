@@ -71,10 +71,78 @@ type TimelineSelection =
   | { kind: "ranking"; index: number }
   | { kind: "broll"; id: string }
   | { kind: "audio" }
-  | { kind: "imported-audio" }
+  | { kind: "imported-audio"; id: string }
   | { kind: "scene"; index: number }
   | { kind: "removed"; index: number };
 type ContextTarget = TimelineSelection | { kind: "watermark" };
+type ImportedAudioTrack = { id: string; name: string; file: File; url: string; samples: number[]; duration: number; volume: number; offset: number };
+// Full content snapshot of one scene (a template + its own media). Global effects
+// (watermark, imported audios) are NOT part of a scene — they span the project.
+type SceneData = {
+  mode: TemplateMode;
+  settings: EditorSettings;
+  products: Product[];
+  canvasLayouts: CanvasLayouts;
+  rankingSettings: RankingSettings;
+  rankingScenes: RankingScene[];
+  selectedRankingScene: number;
+  routineHeadings: RoutineHeadings;
+  questionBox: QuestionBoxContent;
+  extraTextLayers: ExtraTextLayer[];
+  rankingScaleTarget: number;
+  videoFile?: File;
+  videoUrl?: string;
+  videoDuration: number;
+  silentRanges: SilentRange[];
+  videoSplits: number[];
+  mainSegmentOrder: number[];
+  mainCrop: MainCrop;
+  mainVideoFocus: VideoFocus;
+  playbackSpeed: number;
+  audioExtracted: boolean;
+  brollClips: BrollClip[];
+  timelineMarkers: TimelineMarker[];
+  reactMediaFile?: File;
+  reactMediaUrl?: string;
+  reactMediaType: "video" | "image";
+  reactLayout: ReactOverlayLayout;
+  reactRemoveBackground: boolean;
+  reactMaskThreshold: number;
+  reactEdgeSoftness: number;
+  photoReelFile?: File;
+  photoReelUrl?: string;
+  photoReelDuration: number;
+  cinematicLayout: CinematicLayout;
+  splitDirection: SplitDirection;
+  splitPosition: number;
+  splitBarSize: number;
+  splitBarColor: string;
+  brollPlacement: "first" | "second";
+};
+type Scene = { id: string; name: string; data: SceneData };
+type ExportPreset = { name: string; note: string; width: number; height: number; fps: number; bitrate: number };
+// Shared render target so several scenes can be recorded into one video file.
+type SuperClip = {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  compositionCanvas: HTMLCanvasElement;
+  compositionContext: CanvasRenderingContext2D;
+  recorder: MediaRecorder;
+  audioContext: AudioContext;
+  audioDestination: MediaStreamAudioDestinationNode;
+  preset: ExportPreset;
+  sceneLabel: string;
+};
+
+const TEMPLATE_LABELS: Record<TemplateMode, string> = {
+  ranking: "Ranking",
+  "timed-ranking": "Ranking animado",
+  free: "Livre",
+  cinematic: "Cinema",
+  routine: "Rotina",
+  react: "React",
+  "question-box": "Caixinha",
+};
 type CanvasElementId = "title" | "category" | "question-box" | "watermark" | `label-${number}` | `product-${number}` | `extra-text-${string}`;
 type WatermarkFormat = "full" | "compact";
 type CanvasElementLayout = { x: number; y: number; width: number; rotation?: number };
@@ -834,12 +902,10 @@ export default function Home() {
   const [timelineCollapsed, setTimelineCollapsed] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [waveformSamples, setWaveformSamples] = useState<number[]>([]);
-  const [importedAudioFile, setImportedAudioFile] = useState<File | null>(null);
-  const [importedAudioUrl, setImportedAudioUrl] = useState("");
-  const [importedAudioSamples, setImportedAudioSamples] = useState<number[]>([]);
-  const [importedAudioDuration, setImportedAudioDuration] = useState(0);
-  const [importedAudioVolume, setImportedAudioVolume] = useState(1);
-  const [importedAudioOffset, setImportedAudioOffset] = useState(0);
+  const [importedAudios, setImportedAudios] = useState<ImportedAudioTrack[]>([]);
+  const [scenes, setScenes] = useState<Scene[]>([]);
+  const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [showLinkMenu, setShowLinkMenu] = useState(false);
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkName, setWatermarkName] = useState("Seu Nome");
   const [watermarkHandle, setWatermarkHandle] = useState("@seuusuario");
@@ -881,14 +947,16 @@ export default function Home() {
   const [activeFactorySequence, setActiveFactorySequence] = useState<[FactoryClip, FactoryClip, FactoryClip] | null>(null);
   const [factoryPreparing, setFactoryPreparing] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const importedAudioRef = useRef<HTMLAudioElement>(null);
   const importedAudioInputRef = useRef<HTMLInputElement>(null);
-  const importedAudioBufferRef = useRef<AudioBuffer | null>(null);
-  const importedAudioDragRef = useRef<{ pointerId: number; startX: number; width: number; initialOffset: number } | null>(null);
+  const importedAudioElsRef = useRef<Record<string, HTMLAudioElement | null>>({});
+  const importedAudioBuffersRef = useRef<Record<string, AudioBuffer>>({});
+  const importedAudioDragRef = useRef<{ id: string; pointerId: number; startX: number; width: number; initialOffset: number } | null>(null);
   const watermarkPhotoInputRef = useRef<HTMLInputElement>(null);
   const watermarkInteractionRef = useRef<{ type: "drag" | "resize"; pointerId: number; startX: number; startY: number; layout: CanvasElementLayout; stageWidth: number; stageHeight: number } | null>(null);
   const timelineSelectionRef = useRef<TimelineSelection | null>(null);
   const deleteTimelineRef = useRef<(target: ContextTarget) => void>(() => {});
+  const exportSceneRef = useRef<(superClip?: SuperClip) => Promise<void>>(async () => {});
+  const pendingSceneVideoUrlRef = useRef<string>("");
   const playbackMonitorRef = useRef<number | null>(null);
   const playbackMonitorUsesRVFC = useRef(false);
   const advancePlaybackRef = useRef<() => void>(() => {});
@@ -984,14 +1052,23 @@ export default function Home() {
   }, [timelineZoom]);
 
   useEffect(() => {
-    const audio = importedAudioRef.current;
-    if (audio) audio.volume = clamp(importedAudioVolume, 0, 1);
-  }, [importedAudioVolume, importedAudioUrl]);
+    importedAudios.forEach((track) => {
+      const audio = importedAudioElsRef.current[track.id];
+      if (audio) audio.volume = clamp(track.volume, 0, 1);
+    });
+  }, [importedAudios]);
 
   useEffect(() => { timelineSelectionRef.current = timelineSelection; });
   useEffect(() => { deleteTimelineRef.current = deleteTimelineTarget; });
   useEffect(() => { advancePlaybackRef.current = advancePlaybackPosition; });
   useEffect(() => () => stopPlaybackMonitor(), []);
+
+  useEffect(() => {
+    if (!showLinkMenu) return;
+    const close = () => setShowLinkMenu(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [showLinkMenu]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -1046,7 +1123,7 @@ export default function Home() {
   useEffect(() => {
     syncImportedAudio(videoRef.current?.currentTime ?? currentTime, { force: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, importedAudioOffset, importedAudioUrl, importedAudioDuration, playbackSpeed]);
+  }, [isPlaying, importedAudios, playbackSpeed]);
 
   useEffect(() => {
     if (!videoUrl) return;
@@ -1760,6 +1837,175 @@ export default function Home() {
     setToast("Modelo Rotina Dia & Noite carregado");
   }
 
+  function activateTemplateMode(mode: TemplateMode) {
+    if (mode === "ranking") activateRankingTemplate();
+    else if (mode === "timed-ranking") activateTimedRankingTemplate();
+    else if (mode === "free") activateFreeTemplate();
+    else if (mode === "cinematic") activateCinematicTemplate();
+    else if (mode === "react") activateReactTemplate();
+    else if (mode === "routine") activateRoutineTemplate();
+    else activateQuestionBoxTemplate();
+  }
+
+  function captureSceneData(): SceneData {
+    return {
+      mode: templateMode,
+      settings: { ...settings, textStyles: { ...settings.textStyles }, products: settings.products.map((product) => ({ ...product })) },
+      products: products.map((product) => ({ ...product })),
+      canvasLayouts: { ...canvasLayouts },
+      rankingSettings: { ...rankingSettings, itemTimes: [...rankingSettings.itemTimes], itemEndTimes: [...rankingSettings.itemEndTimes], itemLayers: [...rankingSettings.itemLayers], itemScales: [...rankingSettings.itemScales] },
+      rankingScenes: rankingScenes.map((scene) => ({ ...scene })),
+      selectedRankingScene,
+      routineHeadings: { ...routineHeadings },
+      questionBox: { ...questionBox },
+      extraTextLayers: extraTextLayers.map((layer) => ({ ...layer, style: { ...layer.style } })),
+      rankingScaleTarget,
+      videoFile,
+      videoUrl,
+      videoDuration,
+      silentRanges: silentRanges.map((range) => ({ ...range })),
+      videoSplits: [...videoSplits],
+      mainSegmentOrder: [...mainSegmentOrder],
+      mainCrop: { ...mainCrop },
+      mainVideoFocus: { ...mainVideoFocus },
+      playbackSpeed,
+      audioExtracted,
+      brollClips: brollClips.map((clip) => ({ ...clip })),
+      timelineMarkers: timelineMarkers.map((marker) => ({ ...marker })),
+      reactMediaFile,
+      reactMediaUrl,
+      reactMediaType,
+      reactLayout: { ...reactLayout },
+      reactRemoveBackground,
+      reactMaskThreshold,
+      reactEdgeSoftness,
+      photoReelFile,
+      photoReelUrl,
+      photoReelDuration,
+      cinematicLayout,
+      splitDirection,
+      splitPosition,
+      splitBarSize,
+      splitBarColor,
+      brollPlacement,
+    };
+  }
+
+  function applySceneData(data: SceneData) {
+    const video = videoRef.current;
+    if (video && !video.paused) video.pause();
+    setTemplateMode(data.mode);
+    setSettings({ ...data.settings, textStyles: { ...data.settings.textStyles }, products: data.settings.products.map((product) => ({ ...product })) });
+    setProducts(data.products.map((product) => ({ ...product })));
+    setCanvasLayouts({ ...data.canvasLayouts });
+    setRankingSettings({ ...data.rankingSettings });
+    setRankingScenes(data.rankingScenes.map((scene) => ({ ...scene })));
+    setSelectedRankingScene(data.selectedRankingScene);
+    setRoutineHeadings({ ...data.routineHeadings });
+    setQuestionBox({ ...data.questionBox });
+    setExtraTextLayers(data.extraTextLayers.map((layer) => ({ ...layer, style: { ...layer.style } })));
+    setRankingScaleTarget(data.rankingScaleTarget);
+    // Recreate blob URLs from the durable Files: a scene's stored URL may have
+    // been revoked when another scene loaded its own media.
+    const nextVideoUrl = data.videoFile ? URL.createObjectURL(data.videoFile) : (data.videoUrl || undefined);
+    pendingSceneVideoUrlRef.current = nextVideoUrl || "";
+    setVideoFile(data.videoFile);
+    setVideoUrl(nextVideoUrl);
+    knownVideoDurationRef.current = data.videoDuration;
+    setVideoDuration(data.videoDuration);
+    setSilentRanges(data.silentRanges.map((range) => ({ ...range })));
+    setVideoSplits([...data.videoSplits]);
+    setMainSegmentOrder([...data.mainSegmentOrder]);
+    setMainCrop({ ...data.mainCrop });
+    setMainVideoFocus({ ...data.mainVideoFocus });
+    setPlaybackSpeed(data.playbackSpeed);
+    setAudioExtracted(data.audioExtracted);
+    setBrollClips(data.brollClips.map((clip) => ({ ...clip })));
+    setTimelineMarkers(data.timelineMarkers.map((marker) => ({ ...marker })));
+    setReactMediaFile(data.reactMediaFile);
+    setReactMediaUrl(data.reactMediaFile ? URL.createObjectURL(data.reactMediaFile) : data.reactMediaUrl);
+    setReactMediaType(data.reactMediaType);
+    setReactLayout({ ...data.reactLayout });
+    setReactRemoveBackground(data.reactRemoveBackground);
+    setReactMaskThreshold(data.reactMaskThreshold);
+    setReactEdgeSoftness(data.reactEdgeSoftness);
+    setPhotoReelFile(data.photoReelFile);
+    setPhotoReelUrl(data.photoReelFile ? URL.createObjectURL(data.photoReelFile) : data.photoReelUrl);
+    setPhotoReelDuration(data.photoReelDuration);
+    setCinematicLayout(data.cinematicLayout);
+    setSplitDirection(data.splitDirection);
+    setSplitPosition(data.splitPosition);
+    setSplitBarSize(data.splitBarSize);
+    setSplitBarColor(data.splitBarColor);
+    setBrollPlacement(data.brollPlacement);
+    setSelectedElement(null);
+    setTimelineSelection(null);
+    setContextMenu(null);
+    setCurrentTime(0);
+    activeMainOrderIndexRef.current = 0;
+  }
+
+  function sceneName(mode: TemplateMode, position: number) {
+    return `Cena ${position} · ${TEMPLATE_LABELS[mode]}`;
+  }
+
+  function linkNewScene(mode: TemplateMode) {
+    const currentData = captureSceneData();
+    const firstSceneId = crypto.randomUUID();
+    const newSceneId = crypto.randomUUID();
+    setScenes((prev) => {
+      const base = prev.length
+        ? prev.map((scene) => (scene.id === activeSceneId ? { ...scene, data: currentData } : scene))
+        : [{ id: firstSceneId, name: sceneName(currentData.mode, 1), data: currentData }];
+      return [...base, { id: newSceneId, name: sceneName(mode, base.length + 1), data: currentData }];
+    });
+    setActiveSceneId(newSceneId);
+    activateTemplateMode(mode);
+    setToast(`Cena vinculada: ${TEMPLATE_LABELS[mode]} · edite e adicione o vídeo desta cena`);
+  }
+
+  function switchToScene(id: string) {
+    if (id === activeSceneId) return;
+    const target = scenes.find((scene) => scene.id === id);
+    if (!target) return;
+    const currentData = captureSceneData();
+    setScenes((prev) => prev.map((scene) => (scene.id === activeSceneId ? { ...scene, data: currentData } : scene)));
+    applySceneData(target.data);
+    setActiveSceneId(id);
+  }
+
+  function removeScene(id: string) {
+    const index = scenes.findIndex((scene) => scene.id === id);
+    if (index < 0) return;
+    const remaining = scenes.filter((scene) => scene.id !== id);
+    if (remaining.length <= 1) {
+      // Back to a single-scene project (no scenes layer).
+      setScenes([]);
+      setActiveSceneId(null);
+      if (id === activeSceneId && remaining[0]) applySceneData(remaining[0].data);
+      setToast("Cena removida");
+      return;
+    }
+    if (id === activeSceneId) {
+      const fallback = remaining[Math.max(0, index - 1)] || remaining[0];
+      applySceneData(fallback.data);
+      setActiveSceneId(fallback.id);
+    }
+    setScenes(remaining.map((scene, position) => ({ ...scene, name: scene.name.replace(/^Cena \d+/, `Cena ${position + 1}`) })));
+    setToast("Cena removida");
+  }
+
+  function moveScene(id: string, direction: -1 | 1) {
+    setScenes((prev) => {
+      const index = prev.findIndex((scene) => scene.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next.map((scene, position) => ({ ...scene, name: scene.name.replace(/^Cena \d+/, `Cena ${position + 1}`) }));
+    });
+  }
+
   function addCinematicText() {
     addExtraText();
   }
@@ -2360,57 +2606,59 @@ export default function Home() {
       setToast("Escolha um arquivo de áudio (MP3, WAV, M4A…)");
       return;
     }
-    if (importedAudioUrl) URL.revokeObjectURL(importedAudioUrl);
-    importedAudioBufferRef.current = null;
-    setImportedAudioFile(file);
-    setImportedAudioUrl(URL.createObjectURL(file));
-    setImportedAudioOffset(0);
-    setImportedAudioVolume(1);
-    setImportedAudioSamples([]);
-    setImportedAudioDuration(0);
+    const id = crypto.randomUUID();
+    const track: ImportedAudioTrack = { id, name: file.name, file, url: URL.createObjectURL(file), samples: [], duration: 0, volume: 1, offset: 0 };
+    setImportedAudios((current) => [...current, track]);
     setTimelineCollapsed(false);
     setToast(`Áudio "${file.name}" importado`);
     const waveform = await buildWaveform(file);
-    setImportedAudioSamples(waveform.samples);
-    setImportedAudioDuration(waveform.duration);
+    setImportedAudios((current) => current.map((item) => item.id === id ? { ...item, samples: waveform.samples, duration: waveform.duration } : item));
   }
 
-  function removeImportedAudio() {
-    if (importedAudioUrl) URL.revokeObjectURL(importedAudioUrl);
-    importedAudioBufferRef.current = null;
-    const audio = importedAudioRef.current;
+  function updateImportedAudio(id: string, patch: Partial<ImportedAudioTrack>) {
+    setImportedAudios((current) => current.map((track) => track.id === id ? { ...track, ...patch } : track));
+  }
+
+  function removeImportedAudio(id: string) {
+    const audio = importedAudioElsRef.current[id];
     if (audio) audio.pause();
-    setImportedAudioFile(null);
-    setImportedAudioUrl("");
-    setImportedAudioSamples([]);
-    setImportedAudioDuration(0);
-    setImportedAudioOffset(0);
-    setTimelineSelection((current) => (current?.kind === "imported-audio" ? null : current));
+    delete importedAudioElsRef.current[id];
+    delete importedAudioBuffersRef.current[id];
+    setImportedAudios((current) => {
+      const track = current.find((item) => item.id === id);
+      if (track) URL.revokeObjectURL(track.url);
+      return current.filter((item) => item.id !== id);
+    });
+    setTimelineSelection((current) => (current?.kind === "imported-audio" && current.id === id ? null : current));
   }
 
   function syncImportedAudio(videoTime: number, options?: { force?: boolean }) {
-    const audio = importedAudioRef.current;
-    if (!audio || !importedAudioUrl) return;
-    const target = videoTime - importedAudioOffset;
-    if (target < -.05 || target > importedAudioDuration + .05) {
-      if (!audio.paused) audio.pause();
-      return;
-    }
-    const clampedTarget = clamp(target, 0, Math.max(0, importedAudioDuration - .01));
-    if (options?.force || Math.abs(audio.currentTime - clampedTarget) > .28) audio.currentTime = clampedTarget;
-    audio.playbackRate = playbackSpeed;
-    if (isPlaying && audio.paused) audio.play().catch(() => undefined);
-    else if (!isPlaying && !audio.paused) audio.pause();
+    importedAudios.forEach((track) => {
+      const audio = importedAudioElsRef.current[track.id];
+      if (!audio) return;
+      const target = videoTime - track.offset;
+      if (target < -.05 || target > track.duration + .05) {
+        if (!audio.paused) audio.pause();
+        return;
+      }
+      const clampedTarget = clamp(target, 0, Math.max(0, track.duration - .01));
+      if (options?.force || Math.abs(audio.currentTime - clampedTarget) > .28) audio.currentTime = clampedTarget;
+      audio.playbackRate = playbackSpeed;
+      audio.volume = clamp(track.volume, 0, 1);
+      if (isPlaying && audio.paused) audio.play().catch(() => undefined);
+      else if (!isPlaying && !audio.paused) audio.pause();
+    });
   }
 
-  function beginImportedAudioDrag(event: React.PointerEvent<HTMLElement>) {
+  function beginImportedAudioDrag(event: React.PointerEvent<HTMLElement>, id: string) {
     const track = event.currentTarget.closest(".timeline-track");
-    if (!(track instanceof HTMLElement)) return;
+    const audioTrack = importedAudios.find((item) => item.id === id);
+    if (!(track instanceof HTMLElement) || !audioTrack) return;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setTimelineSelection({ kind: "imported-audio" });
-    importedAudioDragRef.current = { pointerId: event.pointerId, startX: event.clientX, width: track.getBoundingClientRect().width, initialOffset: importedAudioOffset };
+    setTimelineSelection({ kind: "imported-audio", id });
+    importedAudioDragRef.current = { id, pointerId: event.pointerId, startX: event.clientX, width: track.getBoundingClientRect().width, initialOffset: audioTrack.offset };
   }
 
   function moveImportedAudioDrag(event: React.PointerEvent<HTMLElement>) {
@@ -2418,7 +2666,7 @@ export default function Home() {
     if (!drag || drag.pointerId !== event.pointerId || !videoDuration) return;
     event.preventDefault();
     const deltaTime = ((event.clientX - drag.startX) / Math.max(1, drag.width)) * videoDuration;
-    setImportedAudioOffset(clamp(drag.initialOffset + deltaTime, 0, Math.max(.2, videoDuration)));
+    updateImportedAudio(drag.id, { offset: clamp(drag.initialOffset + deltaTime, 0, Math.max(.2, videoDuration)) });
   }
 
   function endImportedAudioDrag(event: React.PointerEvent<HTMLElement>) {
@@ -2523,7 +2771,7 @@ export default function Home() {
         break;
       case "broll": removeBroll(target.id); break;
       case "audio": pushEditorHistory(); setAudioExtracted(false); break;
-      case "imported-audio": removeImportedAudio(); break;
+      case "imported-audio": removeImportedAudio(target.id); break;
       case "removed": restoreCut(target.index); break;
       case "watermark": setWatermarkEnabled(false); break;
       case "factory": setToast("Os clipes da Fábrica são ajustados pelas alças, não removidos aqui"); break;
@@ -2539,7 +2787,7 @@ export default function Home() {
       case "scene": return rankingScenes[target.index]?.title || `Quadro ${target.index + 1}`;
       case "broll": return brollClips.find((clip) => clip.id === target.id)?.name || "Sobreposição";
       case "audio": return "Áudio extraído";
-      case "imported-audio": return importedAudioFile?.name || "Áudio importado";
+      case "imported-audio": return importedAudios.find((track) => track.id === target.id)?.name || "Áudio importado";
       case "removed": return "Trecho removido";
       case "watermark": return "Minha marca";
       case "factory": return "Clipe da Fábrica";
@@ -2566,7 +2814,7 @@ export default function Home() {
       if (clip) actions.push({ label: "Ir ao início", onClick: () => { seekVideo(clip.timelineStart); close(); } });
     }
     if (target.kind === "imported-audio") {
-      actions.push({ label: "Começar no cursor", onClick: () => { setImportedAudioOffset(clamp(currentTime, 0, Math.max(.2, videoDuration))); close(); } });
+      actions.push({ label: "Começar no cursor", onClick: () => { updateImportedAudio(target.id, { offset: clamp(currentTime, 0, Math.max(.2, videoDuration)) }); close(); } });
     }
     if (target.kind === "audio") {
       actions.push({ label: settings.removeAudio ? "Ativar áudio" : "Silenciar áudio", onClick: () => { pushEditorHistory(); setSettings((current) => ({ ...current, removeAudio: !current.removeAudio })); close(); } });
@@ -4429,35 +4677,43 @@ export default function Home() {
     context.restore();
   }
 
-  async function exportVideo() {
+  async function exportVideo(superClip?: SuperClip) {
     const video = videoRef.current;
     if (!video || !videoFile || !video.videoWidth) {
+      if (superClip) throw new Error(`A cena "${superClip.sceneLabel}" precisa de um vídeo`);
       setToast("Carregue um vídeo antes de exportar");
       return;
     }
-    if (templateMode === "react" && reactRemoveBackground && reactSegmentationStatus !== "ready") {
+    if (!superClip && templateMode === "react" && reactRemoveBackground && reactSegmentationStatus !== "ready") {
       setToast(reactSegmentationStatus === "error" ? "Ajuste o recorte ou desative o fundo transparente antes de exportar" : "Aguarde o recorte transparente ficar pronto");
       return;
     }
     if (!("MediaRecorder" in window)) {
+      if (superClip) throw new Error("Este navegador não oferece exportação local");
       setToast("Este navegador não oferece exportação local");
       return;
     }
-    setExporting(true);
-    setShowExportDialog(false);
-    setExportProgress(0);
-    const exportPreset = EXPORT_PRESETS[exportPresetId];
+    if (!superClip) {
+      setExporting(true);
+      setShowExportDialog(false);
+      setExportProgress(0);
+    }
+    const exportPreset = superClip ? superClip.preset : EXPORT_PRESETS[exportPresetId];
     await Promise.all([...Object.values(settings.textStyles), ...extraTextLayers.map((layer) => layer.style)].map((style) =>
       document.fonts.load(`${style.fontWeight} ${style.fontSize}px "${style.fontFamily}"`),
     ));
-    const canvas = document.createElement("canvas");
-    canvas.width = exportPreset.width;
-    canvas.height = exportPreset.height;
-    const context = canvas.getContext("2d")!;
-    const compositionCanvas = document.createElement("canvas");
-    compositionCanvas.width = canvas.width;
-    compositionCanvas.height = canvas.height;
-    const compositionContext = compositionCanvas.getContext("2d")!;
+    const canvas = superClip ? superClip.canvas : document.createElement("canvas");
+    if (!superClip) {
+      canvas.width = exportPreset.width;
+      canvas.height = exportPreset.height;
+    }
+    const context = superClip ? superClip.context : canvas.getContext("2d")!;
+    const compositionCanvas = superClip ? superClip.compositionCanvas : document.createElement("canvas");
+    if (!superClip) {
+      compositionCanvas.width = canvas.width;
+      compositionCanvas.height = canvas.height;
+    }
+    const compositionContext = superClip ? superClip.compositionContext : compositionCanvas.getContext("2d")!;
     const drawCinematicBroll = (auxiliaryVideo: HTMLVideoElement, focus: VideoFocus, clip: BrollClip) => {
       if (clip.placement === "overlay") {
         const requestedWidth = canvas.width * (clip.overlayWidth ?? 40) / 100;
@@ -4818,59 +5074,85 @@ export default function Home() {
       return { clip, video: auxiliaryVideo };
     }));
 
-    const canvasStream = canvas.captureStream(exportPreset.fps);
+    const canvasStream = superClip ? null : canvas.captureStream(exportPreset.fps);
     const captureVideo = video as HTMLVideoElement & { captureStream?: () => MediaStream; webkitCaptureStream?: () => MediaStream };
     const sourceStream = captureVideo.captureStream?.() || captureVideo.webkitCaptureStream?.();
+    const removedBefore = (time: number) => settings.removeSilence
+      ? silentRanges.reduce((total, range) => total + (range.start >= time ? 0 : Math.max(0, Math.min(time, range.end) - range.start)), 0)
+      : 0;
     let exportAudioContext: AudioContext | null = null;
     let startImportedAudio: (() => void) | null = null;
-    const hasImportedAudio = Boolean(importedAudioFile && importedAudioVolume > 0);
-    if ((!settings.removeAudio && sourceStream?.getAudioTracks().length) || overlayVideoClips.length || hasImportedAudio) {
-      exportAudioContext = new AudioContext();
-      await exportAudioContext.resume();
-      const audioDestination = exportAudioContext.createMediaStreamDestination();
+    if (superClip) {
+      // This scene's own audio flows into the shared destination; imported audios
+      // are global and handled once by the super-content orchestrator.
+      exportAudioContext = superClip.audioContext;
       if (!settings.removeAudio && sourceStream?.getAudioTracks().length) {
-        exportAudioContext.createMediaStreamSource(sourceStream).connect(audioDestination);
+        superClip.audioContext.createMediaStreamSource(sourceStream).connect(superClip.audioDestination);
       }
-      const removedBefore = (time: number) => settings.removeSilence
-        ? silentRanges.reduce((total, range) => total + (range.start >= time ? 0 : Math.max(0, Math.min(time, range.end) - range.start)), 0)
-        : 0;
       overlayVideoClips.forEach((clip) => {
-        const effectSource = exportAudioContext!.createBufferSource();
-        const effectGain = exportAudioContext!.createGain();
-        effectSource.buffer = createSoundEffectBuffer(exportAudioContext!, clip.sfx);
+        const effectSource = superClip.audioContext.createBufferSource();
+        const effectGain = superClip.audioContext.createGain();
+        effectSource.buffer = createSoundEffectBuffer(superClip.audioContext, clip.sfx);
         effectGain.gain.value = .72;
-        effectSource.connect(effectGain).connect(audioDestination);
-        effectSource.start(exportAudioContext!.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
+        effectSource.connect(effectGain).connect(superClip.audioDestination);
+        effectSource.start(superClip.audioContext.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
       });
-      if (hasImportedAudio && importedAudioFile) {
-        try {
-          if (!importedAudioBufferRef.current) {
-            importedAudioBufferRef.current = await exportAudioContext.decodeAudioData(await importedAudioFile.arrayBuffer());
-          }
-          const musicBuffer = importedAudioBufferRef.current;
-          const musicSource = exportAudioContext.createBufferSource();
-          const musicGain = exportAudioContext.createGain();
-          musicSource.buffer = musicBuffer;
-          musicGain.gain.value = importedAudioVolume;
-          musicSource.connect(musicGain).connect(audioDestination);
-          // Started together with the recorder so the imported track lines up
-          // with the beginning of the export; the offset shifts it forward.
-          startImportedAudio = () => {
-            try { musicSource.start(exportAudioContext!.currentTime + Math.max(0, importedAudioOffset)); } catch { /* already started */ }
-          };
-        } catch {
-          setToast("Não foi possível decodificar o áudio importado");
+    } else {
+      const audibleImportedAudios = importedAudios.filter((track) => track.volume > 0);
+      const hasImportedAudio = audibleImportedAudios.length > 0;
+      if ((!settings.removeAudio && sourceStream?.getAudioTracks().length) || overlayVideoClips.length || hasImportedAudio) {
+        exportAudioContext = new AudioContext();
+        await exportAudioContext.resume();
+        const audioDestination = exportAudioContext.createMediaStreamDestination();
+        if (!settings.removeAudio && sourceStream?.getAudioTracks().length) {
+          exportAudioContext.createMediaStreamSource(sourceStream).connect(audioDestination);
         }
+        overlayVideoClips.forEach((clip) => {
+          const effectSource = exportAudioContext!.createBufferSource();
+          const effectGain = exportAudioContext!.createGain();
+          effectSource.buffer = createSoundEffectBuffer(exportAudioContext!, clip.sfx);
+          effectGain.gain.value = .72;
+          effectSource.connect(effectGain).connect(audioDestination);
+          effectSource.start(exportAudioContext!.currentTime + .08 + Math.max(0, clip.timelineStart - removedBefore(clip.timelineStart)));
+        });
+        if (hasImportedAudio) {
+          const starters: Array<{ source: AudioBufferSourceNode; offset: number }> = [];
+          for (const track of audibleImportedAudios) {
+            try {
+              if (!importedAudioBuffersRef.current[track.id]) {
+                importedAudioBuffersRef.current[track.id] = await exportAudioContext.decodeAudioData(await track.file.arrayBuffer());
+              }
+              const musicSource = exportAudioContext.createBufferSource();
+              const musicGain = exportAudioContext.createGain();
+              musicSource.buffer = importedAudioBuffersRef.current[track.id];
+              musicGain.gain.value = track.volume;
+              musicSource.connect(musicGain).connect(audioDestination);
+              starters.push({ source: musicSource, offset: track.offset });
+            } catch {
+              setToast(`Não foi possível decodificar o áudio "${track.name}"`);
+            }
+          }
+          startImportedAudio = () => {
+            starters.forEach(({ source, offset }) => {
+              try { source.start(exportAudioContext!.currentTime + Math.max(0, offset)); } catch { /* already started */ }
+            });
+          };
+        }
+        audioDestination.stream.getAudioTracks().forEach((track) => canvasStream!.addTrack(track));
       }
-      audioDestination.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
     }
     const mimeCandidates = ["video/mp4;codecs=avc1.42E01E", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
     const mimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
-    const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: exportPreset.bitrate };
-    if (mimeType) recorderOptions.mimeType = mimeType;
-    const recorder = new MediaRecorder(canvasStream, recorderOptions);
+    let recorder: MediaRecorder;
     const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+    if (superClip) {
+      recorder = superClip.recorder;
+    } else {
+      const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: exportPreset.bitrate };
+      if (mimeType) recorderOptions.mimeType = mimeType;
+      recorder = new MediaRecorder(canvasStream!, recorderOptions);
+      recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+    }
     const originalTime = video.currentTime;
     const originalMuted = video.muted;
     const originalPlaybackRate = video.playbackRate;
@@ -4884,8 +5166,10 @@ export default function Home() {
 
     await new Promise<void>((resolve, reject) => {
       let raf = 0;
-      recorder.onerror = () => reject(new Error("Falha na gravação"));
-      recorder.onstop = () => resolve();
+      if (!superClip) {
+        recorder.onerror = () => reject(new Error("Falha na gravação"));
+        recorder.onstop = () => resolve();
+      }
       const render = () => {
         const exportSegment = exportMainSegments[exportMainIndex];
         if (exportSegment && video.currentTime >= exportSegment.end - .025) {
@@ -4898,7 +5182,9 @@ export default function Home() {
             cancelAnimationFrame(raf);
             reactExportVideo?.pause();
             exportBrollVideos.forEach(({ video: auxiliaryVideo }) => auxiliaryVideo.pause());
-            if (recorder.state !== "inactive") recorder.stop();
+            video.pause();
+            if (superClip) resolve();
+            else if (recorder.state !== "inactive") recorder.stop();
             return;
           }
         }
@@ -5050,10 +5336,20 @@ export default function Home() {
           video.play().catch(reject);
         }
       };
-      recorder.start(1000);
-      startImportedAudio?.();
+      if (!superClip) {
+        recorder.start(1000);
+        startImportedAudio?.();
+      }
       video.play().then(() => render()).catch(reject);
     });
+
+    if (superClip) {
+      video.currentTime = originalTime;
+      video.muted = originalMuted;
+      video.playbackRate = originalPlaybackRate;
+      video.loop = false;
+      return;
+    }
 
     const extension = mimeType.includes("mp4") ? "mp4" : "webm";
     const blob = new Blob(chunks, { type: mimeType || "video/webm" });
@@ -5074,6 +5370,114 @@ export default function Home() {
     if (activeFactoryProject) patchFactoryProject(activeFactoryProject.id, { status: "downloaded" });
     setToast(`${exportPreset.name} exportado em ${exportPreset.width} × ${exportPreset.height}`);
   }
+
+  // Waits until React committed the applied scene AND the <video> actually loaded
+  // that scene's source (matching src + real dimensions), so the export never
+  // reads the previous scene's still-loaded video.
+  function settleAfterSceneApply(): Promise<void> {
+    return new Promise((resolve) => {
+      const video = videoRef.current;
+      if (!video) { resolve(); return; }
+      const expectedUrl = pendingSceneVideoUrlRef.current;
+      const started = performance.now();
+      const check = () => {
+        const current = videoRef.current;
+        if (!current) { resolve(); return; }
+        const srcReady = !expectedUrl || current.src === expectedUrl || current.currentSrc === expectedUrl;
+        if (srcReady && current.readyState >= 2 && current.videoWidth > 0) { window.setTimeout(resolve, 120); return; }
+        if (performance.now() - started > 7000) { resolve(); return; }
+        requestAnimationFrame(check);
+      };
+      // Let React commit the new src first, then poll until it is really loaded.
+      requestAnimationFrame(() => requestAnimationFrame(check));
+    });
+  }
+
+  async function exportSuperContent() {
+    if (scenes.length < 2) { void exportVideo(); return; }
+    if (!("MediaRecorder" in window)) { setToast("Este navegador não oferece exportação local"); return; }
+    const activeIdBefore = activeSceneId;
+    const currentData = captureSceneData();
+    const orderedScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, data: currentData } : scene));
+    const missing = orderedScenes.find((scene) => !scene.data.videoFile);
+    if (missing) { setToast(`Adicione um vídeo na cena "${missing.name}" antes de gerar o super conteúdo`); return; }
+    setExporting(true);
+    setShowExportDialog(false);
+    setExportProgress(0);
+    const preset = EXPORT_PRESETS[exportPresetId];
+    const canvas = document.createElement("canvas");
+    canvas.width = preset.width;
+    canvas.height = preset.height;
+    const context = canvas.getContext("2d")!;
+    const compositionCanvas = document.createElement("canvas");
+    compositionCanvas.width = preset.width;
+    compositionCanvas.height = preset.height;
+    const compositionContext = compositionCanvas.getContext("2d")!;
+    const audioContext = new AudioContext();
+    await audioContext.resume();
+    const audioDestination = audioContext.createMediaStreamDestination();
+    const canvasStream = canvas.captureStream(preset.fps);
+    audioDestination.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+    const mimeType = ["video/mp4;codecs=avc1.42E01E", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+    const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: preset.bitrate };
+    if (mimeType) recorderOptions.mimeType = mimeType;
+    const recorder = new MediaRecorder(canvasStream, recorderOptions);
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+    const recorded = new Promise<Blob>((resolve, reject) => {
+      recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType || "video/webm" }));
+      recorder.onerror = () => reject(new Error("Falha na gravação"));
+    });
+    for (const track of importedAudios.filter((item) => item.volume > 0)) {
+      try {
+        if (!importedAudioBuffersRef.current[track.id]) importedAudioBuffersRef.current[track.id] = await audioContext.decodeAudioData(await track.file.arrayBuffer());
+        const source = audioContext.createBufferSource();
+        const gain = audioContext.createGain();
+        source.buffer = importedAudioBuffersRef.current[track.id];
+        gain.gain.value = track.volume;
+        source.connect(gain).connect(audioDestination);
+        source.start(audioContext.currentTime + Math.max(0, track.offset));
+      } catch { /* ignore a track that fails to decode */ }
+    }
+    recorder.start(1000);
+    const baseClip = { canvas, context, compositionCanvas, compositionContext, recorder, audioContext, audioDestination, preset };
+    let failed: string | null = null;
+    for (let index = 0; index < orderedScenes.length; index += 1) {
+      const scene = orderedScenes[index];
+      // Pause recording while the next scene loads so the transition gap does not
+      // add frozen frames to the final video.
+      if (index > 0) { try { if (recorder.state === "recording") recorder.pause(); } catch { /* pause unsupported */ } }
+      applySceneData(scene.data);
+      await settleAfterSceneApply();
+      try { if (recorder.state === "paused") recorder.resume(); } catch { /* resume unsupported */ }
+      try {
+        await exportSceneRef.current({ ...baseClip, sceneLabel: scene.name });
+      } catch (error) {
+        failed = error instanceof Error ? error.message : "Falha ao montar o super conteúdo";
+        break;
+      }
+      setExportProgress(Math.round(((index + 1) / orderedScenes.length) * 100));
+    }
+    if (recorder.state !== "inactive") recorder.stop();
+    let blob: Blob | null = null;
+    try { blob = await recorded; } catch { failed = failed || "Falha na gravação"; }
+    await audioContext.close().catch(() => undefined);
+    applySceneData(currentData);
+    setActiveSceneId(activeIdBefore);
+    setExporting(false);
+    setExportProgress(0);
+    if (failed || !blob) { setToast(failed || "Não foi possível gerar o super conteúdo"); return; }
+    const extension = mimeType.includes("mp4") ? "mp4" : "webm";
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `super-conteudo-${platform}-${preset.width}x${preset.height}.${extension}`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+    setToast(`Super conteúdo com ${orderedScenes.length} cenas exportado`);
+  }
+
+  exportSceneRef.current = exportVideo;
 
   return (
     <main className="app-shell">
@@ -5204,6 +5608,7 @@ export default function Home() {
               <button className={`safe-zone-toggle ${showSafeZone ? "active" : ""}`} onClick={() => setShowSafeZone((current) => !current)}>{showSafeZone ? "Ocultar safe zone" : "Ver safe zone"}</button>
             </div>
           </div>
+
           <div className="phone-frame">
             <div ref={stageRef} className="video-stage" onPointerDown={() => setSelectedElement(null)} onDrop={onVideoDrop} onDragOver={(event) => event.preventDefault()}>
               {templateMode === "react" && reactMediaUrl && (reactMediaType === "video"
@@ -5909,10 +6314,9 @@ export default function Home() {
               <button className="tool-button editor-action" onClick={() => deleteMainSide("right")} title="Excluir do cursor até o fim do trecho">Excluir →</button>
               <button className="tool-button editor-action danger" onClick={() => timelineSelection?.kind === "main" ? removeMainSegment(timelineSelection.index) : setToast("Selecione um trecho do vídeo para excluir")} title="Excluir o trecho selecionado">Excluir</button>
               <button className={`tool-button editor-action ${audioExtracted ? "active" : ""}`} onClick={extractMainAudio} disabled={audioExtracted} title="Separar o áudio do vídeo">♪ Extrair áudio</button>
-              <button className={`tool-button editor-action ${importedAudioFile ? "active" : ""}`} onClick={() => importedAudioInputRef.current?.click()} title="Importar música ou locução para tocar por cima do vídeo">♫ {importedAudioFile ? "Trocar áudio" : "Importar áudio"}</button>
-              <input ref={importedAudioInputRef} type="file" accept="audio/*" hidden onChange={(event) => { chooseImportedAudio(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-              <audio ref={importedAudioRef} src={importedAudioUrl || undefined} preload="auto" />
-              {importedAudioFile && <button className="tool-button editor-action danger" onClick={removeImportedAudio} title="Remover o áudio importado">♫ Remover</button>}
+              <button className={`tool-button editor-action ${importedAudios.length ? "active" : ""}`} onClick={() => importedAudioInputRef.current?.click()} title="Importar música ou locução para tocar por cima do vídeo (pode adicionar vários)">♫ Importar áudio{importedAudios.length ? ` (${importedAudios.length})` : ""}</button>
+              <input ref={importedAudioInputRef} type="file" accept="audio/*" multiple hidden onChange={(event) => { Array.from(event.target.files || []).forEach((file) => chooseImportedAudio(file)); event.currentTarget.value = ""; }} />
+              {importedAudios.map((track) => <audio key={track.id} ref={(element) => { importedAudioElsRef.current[track.id] = element; }} src={track.url} preload="auto" />)}
               <button className={`tool-button editor-action ${watermarkEnabled ? "active" : ""}`} onClick={toggleWatermark} title="Selo com seu nome, @ e verificado para marcar o vídeo">✔ Minha marca</button>
               <label className="timeline-speed-control" title="Velocidade do vídeo e do áudio"><span>Speed</span><select value={playbackSpeed} onChange={(event) => changePlaybackSpeed(Number(event.target.value))}>{[.25, .5, .75, 1, 1.25, 1.5, 2, 3, 4].map((speed) => <option key={speed} value={speed}>{speed}×</option>)}</select></label>
               <button className="tool-button editor-action" onClick={addTimelineMarker} title="Adicionar marcador na posição do cursor">◆ Marcador</button>
@@ -5999,14 +6403,18 @@ export default function Home() {
                 <button onClick={() => { pushEditorHistory(); setSettings((current) => ({ ...current, removeAudio: !current.removeAudio })); }}>{settings.removeAudio ? "Ativar áudio" : "Silenciar áudio"}</button>
                 <button className="danger" onClick={() => { pushEditorHistory(); setAudioExtracted(false); setTimelineSelection(null); }}>Excluir faixa</button>
               </>}
-              {timelineSelection.kind === "imported-audio" && importedAudioFile && <>
-                <div className="selected-clip-name imported-audio"><span>♫</span><div><strong>{importedAudioFile.name}</strong><small>Começa em {formatTime(importedAudioOffset)} · {formatTime(importedAudioDuration)} · toca por cima</small></div></div>
-                <label className="inspector-slider"><span>Volume {Math.round(importedAudioVolume * 100)}%</span><input type="range" min="0" max="1" step=".02" value={importedAudioVolume} onChange={(event) => setImportedAudioVolume(Number(event.target.value))} /></label>
-                <label className="inspector-slider"><span>Início {formatTime(importedAudioOffset)}</span><input type="range" min="0" max={Math.max(.2, videoDuration)} step=".1" value={Math.min(importedAudioOffset, Math.max(.2, videoDuration))} onChange={(event) => setImportedAudioOffset(Number(event.target.value))} /></label>
-                <button onClick={() => setImportedAudioOffset(0)}>Início no 0s</button>
-                <button onClick={() => setImportedAudioOffset(clamp(currentTime, 0, Math.max(.2, videoDuration)))}>Começar no cursor</button>
-                <button className="danger" onClick={removeImportedAudio}>Remover áudio</button>
-              </>}
+              {timelineSelection.kind === "imported-audio" && (() => {
+                const track = importedAudios.find((item) => item.id === timelineSelection.id);
+                if (!track) return null;
+                return <>
+                  <div className="selected-clip-name imported-audio"><span>♫</span><div><strong>{track.name}</strong><small>Começa em {formatTime(track.offset)} · {formatTime(track.duration)} · toca por cima</small></div></div>
+                  <label className="inspector-slider"><span>Volume {Math.round(track.volume * 100)}%</span><input type="range" min="0" max="1" step=".02" value={track.volume} onChange={(event) => updateImportedAudio(track.id, { volume: Number(event.target.value) })} /></label>
+                  <label className="inspector-slider"><span>Início {formatTime(track.offset)}</span><input type="range" min="0" max={Math.max(.2, videoDuration)} step=".1" value={Math.min(track.offset, Math.max(.2, videoDuration))} onChange={(event) => updateImportedAudio(track.id, { offset: Number(event.target.value) })} /></label>
+                  <button onClick={() => updateImportedAudio(track.id, { offset: 0 })}>Início no 0s</button>
+                  <button onClick={() => updateImportedAudio(track.id, { offset: clamp(currentTime, 0, Math.max(.2, videoDuration)) })}>Começar no cursor</button>
+                  <button className="danger" onClick={() => removeImportedAudio(track.id)}>Remover áudio</button>
+                </>;
+              })()}
               {timelineSelection.kind === "ranking" && selectedRankingIndex !== null && <>
                 <div className="selected-clip-name ranking"><span>{selectedRankingIndex + 1}–</span><div><strong>{products[selectedRankingIndex]?.name || `Item ${selectedRankingIndex + 1}`}</strong><small>{formatTime(rankingStart(selectedRankingIndex))}–{formatTime(rankingEnd(selectedRankingIndex))} · camada {(rankingSettings.itemLayers[selectedRankingIndex] ?? 0) + 1}</small></div></div>
                 <button onClick={() => seekVideo(rankingStart(selectedRankingIndex))}>Ir ao início</button>
@@ -6132,27 +6540,29 @@ export default function Home() {
             </button>
           </div>}
 
-          {importedAudioFile && <div className="timeline-track-row imported-audio-row">
-            <div className="track-label"><span className="track-icon imported-audio">♫</span><div><strong>ÁUDIO IMPORTADO</strong><small>{Math.round(importedAudioVolume * 100)}% · começa em {formatTime(importedAudioOffset)}</small></div></div>
-            <div className="timeline-track imported-audio-track" onClick={seekFromTimeline}>
-              <div
-                className={`imported-audio-clip ${timelineSelection?.kind === "imported-audio" ? "selected" : ""}`}
-                style={{ left: `${clamp(importedAudioOffset / (videoDuration || 1), 0, 1) * 100}%`, width: `${clamp((importedAudioDuration || videoDuration) / (videoDuration || 1), .02, 1) * 100}%` }}
-                role="button"
-                tabIndex={0}
-                onPointerDown={beginImportedAudioDrag}
-                onPointerMove={moveImportedAudioDrag}
-                onPointerUp={endImportedAudioDrag}
-                onPointerCancel={endImportedAudioDrag}
-                onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "imported-audio" }); }}
-                onContextMenu={(event) => openContextMenu(event, { kind: "imported-audio" })}
-                title={`${importedAudioFile.name} · começa em ${formatTime(importedAudioOffset)} · arraste para mover`}
-              >
-                <span className="imported-audio-name">♫ {importedAudioFile.name}</span>
-                {importedAudioSamples.length > 0 && <WaveformCanvas samples={importedAudioSamples} className="imported-audio-waveform" color="#c9a6ff" quietColor="#6f5f9c" />}
+          {importedAudios.map((track, trackIndex) => (
+            <div className="timeline-track-row imported-audio-row" key={track.id}>
+              <div className="track-label"><span className="track-icon imported-audio">♫</span><div><strong>{importedAudios.length > 1 ? `ÁUDIO ${trackIndex + 1}` : "ÁUDIO IMPORTADO"}</strong><small>{Math.round(track.volume * 100)}% · começa em {formatTime(track.offset)}</small></div></div>
+              <div className="timeline-track imported-audio-track" onClick={seekFromTimeline}>
+                <div
+                  className={`imported-audio-clip ${timelineSelection?.kind === "imported-audio" && timelineSelection.id === track.id ? "selected" : ""}`}
+                  style={{ left: `${clamp(track.offset / (videoDuration || 1), 0, 1) * 100}%`, width: `${clamp((track.duration || videoDuration) / (videoDuration || 1), .02, 1) * 100}%` }}
+                  role="button"
+                  tabIndex={0}
+                  onPointerDown={(event) => beginImportedAudioDrag(event, track.id)}
+                  onPointerMove={moveImportedAudioDrag}
+                  onPointerUp={endImportedAudioDrag}
+                  onPointerCancel={endImportedAudioDrag}
+                  onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "imported-audio", id: track.id }); }}
+                  onContextMenu={(event) => openContextMenu(event, { kind: "imported-audio", id: track.id })}
+                  title={`${track.name} · começa em ${formatTime(track.offset)} · arraste para mover`}
+                >
+                  <span className="imported-audio-name">♫ {track.name}</span>
+                  {track.samples.length > 0 && <WaveformCanvas samples={track.samples} className="imported-audio-waveform" color="#c9a6ff" quietColor="#6f5f9c" />}
+                </div>
               </div>
             </div>
-          </div>}
+          ))}
 
           {templateMode === "ranking" && (
             <div className="timeline-track-row ranking-scenes-row">
@@ -6323,7 +6733,7 @@ export default function Home() {
               ))}
             </div>
             <div className="export-source-note"><span>Vídeo original</span><b>{videoRef.current?.videoWidth || 0} × {videoRef.current?.videoHeight || 0}</b></div>
-            <button className="button primary export-confirm" onClick={exportVideo}>Exportar em {EXPORT_PRESETS[exportPresetId].name}</button>
+            <button className="button primary export-confirm" onClick={() => exportVideo()}>Exportar em {EXPORT_PRESETS[exportPresetId].name}</button>
             <small className="export-hint">HD é a opção mais leve. 2K e 4K usam mais memória e podem demorar mais.</small>
           </div>
         </div>
