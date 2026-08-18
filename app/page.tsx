@@ -1064,6 +1064,13 @@ export default function Home() {
   useEffect(() => () => stopPlaybackMonitor(), []);
 
   useEffect(() => {
+    if (!showLinkMenu) return;
+    const close = () => setShowLinkMenu(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [showLinkMenu]);
+
+  useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
     window.addEventListener("pointerdown", close);
@@ -5620,17 +5627,17 @@ export default function Home() {
                   </span>
                 </div>
               ))}
-              <div className="scene-add">
-                <button className="scene-add-btn" onClick={() => setShowLinkMenu((value) => !value)}>＋ Vincular modelo</button>
-                {showLinkMenu && (
-                  <div className="scene-add-menu">
-                    <div className="scene-add-title">Adicionar em sequência</div>
-                    {(["ranking", "timed-ranking", "react", "question-box", "routine", "free", "cinematic"] as TemplateMode[]).map((mode) => (
-                      <button key={mode} onClick={() => { setShowLinkMenu(false); linkNewScene(mode); }}>{TEMPLATE_LABELS[mode]}</button>
-                    ))}
-                  </div>
-                )}
-              </div>
+            </div>
+            <div className="scene-add">
+              <button className="scene-add-btn" onClick={(event) => { event.stopPropagation(); setShowLinkMenu((value) => !value); }}>＋ Vincular modelo</button>
+              {showLinkMenu && (
+                <div className="scene-add-menu" onPointerDown={(event) => event.stopPropagation()}>
+                  <div className="scene-add-title">Adicionar em sequência</div>
+                  {(["ranking", "timed-ranking", "react", "question-box", "routine", "free", "cinematic"] as TemplateMode[]).map((mode) => (
+                    <button key={mode} onClick={() => { setShowLinkMenu(false); linkNewScene(mode); }}>{TEMPLATE_LABELS[mode]}</button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           <div className="phone-frame">

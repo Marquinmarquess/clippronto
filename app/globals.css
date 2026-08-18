@@ -636,10 +636,10 @@ button { color: inherit; }
 .scene-chip-actions button:hover:not(:disabled) { background: #f1f1f4; color: #2a2b30; }
 .scene-chip-actions button:disabled { opacity: .3; cursor: default; }
 .scene-chip-actions button.danger:hover { background: #fdecea; color: #e5484d; }
-.scene-add { position: relative; flex: 0 0 auto; }
+.scene-add { position: relative; flex: 0 0 auto; z-index: 20; }
 .scene-add-btn { height: 34px; padding: 0 12px; border: 1.5px dashed #b9bac2; border-radius: 9px; background: #fff; color: #4b4d55; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .scene-add-btn:hover { border-color: #6d58f3; color: #6d58f3; }
-.scene-add-menu { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 150px; padding: 5px; border: 1px solid #e3e4e8; border-radius: 10px; background: #fff; box-shadow: 0 12px 28px rgba(0,0,0,.14); display: flex; flex-direction: column; gap: 2px; }
+.scene-add-menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; min-width: 160px; padding: 5px; border: 1px solid #e3e4e8; border-radius: 10px; background: #fff; box-shadow: 0 12px 28px rgba(0,0,0,.14); display: flex; flex-direction: column; gap: 2px; }
 .scene-add-title { padding: 4px 8px 6px; color: #9297a0; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
 .scene-add-menu button { height: 30px; padding: 0 9px; border: none; border-radius: 7px; background: transparent; color: #2a2b30; font-size: 11px; font-weight: 600; text-align: left; cursor: pointer; }
 .scene-add-menu button:hover { background: #f2f0fe; color: #6d58f3; }
