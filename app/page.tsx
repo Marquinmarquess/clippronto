@@ -5609,37 +5609,6 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="scenes-bar">
-            <div className="scenes-bar-label"><b>Cenas</b><small>{scenes.length > 1 ? `${scenes.length} modelos em sequência` : "Vincule modelos p/ um super conteúdo"}</small></div>
-            <div className="scenes-list">
-              {scenes.length === 0 ? (
-                <div className="scene-chip active"><span className="scene-index">1</span><span className="scene-name">{TEMPLATE_LABELS[templateMode]}</span></div>
-              ) : scenes.map((scene, index) => (
-                <div key={scene.id} className={`scene-chip ${scene.id === activeSceneId ? "active" : ""}`}>
-                  <button className="scene-chip-main" onClick={() => switchToScene(scene.id)} title="Editar esta cena">
-                    <span className="scene-index">{index + 1}</span>
-                    <span className="scene-name">{TEMPLATE_LABELS[scene.id === activeSceneId ? templateMode : scene.data.mode]}</span>
-                  </button>
-                  <span className="scene-chip-actions">
-                    <button onClick={() => moveScene(scene.id, -1)} disabled={index === 0} aria-label="Mover para trás">‹</button>
-                    <button onClick={() => moveScene(scene.id, 1)} disabled={index === scenes.length - 1} aria-label="Mover para frente">›</button>
-                    <button className="danger" onClick={() => removeScene(scene.id)} aria-label="Remover cena">✕</button>
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="scene-add">
-              <button className="scene-add-btn" onClick={(event) => { event.stopPropagation(); setShowLinkMenu((value) => !value); }}>＋ Vincular modelo</button>
-              {showLinkMenu && (
-                <div className="scene-add-menu" onPointerDown={(event) => event.stopPropagation()}>
-                  <div className="scene-add-title">Adicionar em sequência</div>
-                  {(["ranking", "timed-ranking", "react", "question-box", "routine", "free", "cinematic"] as TemplateMode[]).map((mode) => (
-                    <button key={mode} onClick={() => { setShowLinkMenu(false); linkNewScene(mode); }}>{TEMPLATE_LABELS[mode]}</button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
           <div className="phone-frame">
             <div ref={stageRef} className="video-stage" onPointerDown={() => setSelectedElement(null)} onDrop={onVideoDrop} onDragOver={(event) => event.preventDefault()}>
               {templateMode === "react" && reactMediaUrl && (reactMediaType === "video"
@@ -6764,8 +6733,8 @@ export default function Home() {
               ))}
             </div>
             <div className="export-source-note"><span>Vídeo original</span><b>{videoRef.current?.videoWidth || 0} × {videoRef.current?.videoHeight || 0}</b></div>
-            <button className="button primary export-confirm" onClick={() => (scenes.length > 1 ? exportSuperContent() : exportVideo())}>{scenes.length > 1 ? `Exportar super conteúdo (${scenes.length} cenas)` : `Exportar em ${EXPORT_PRESETS[exportPresetId].name}`}</button>
-            <small className="export-hint">{scenes.length > 1 ? "As cenas serão unidas em sequência num único vídeo." : "HD é a opção mais leve. 2K e 4K usam mais memória e podem demorar mais."}</small>
+            <button className="button primary export-confirm" onClick={() => exportVideo()}>Exportar em {EXPORT_PRESETS[exportPresetId].name}</button>
+            <small className="export-hint">HD é a opção mais leve. 2K e 4K usam mais memória e podem demorar mais.</small>
           </div>
         </div>
       )}
