@@ -1001,6 +1001,12 @@ export default function Home() {
   } | null>(null);
   const timelineResizeRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   const playheadDragRef = useRef<number | null>(null);
+  const playheadElRef = useRef<HTMLButtonElement>(null);
+  const scrubGeomRef = useRef<{ left: number; width: number } | null>(null);
+  const scrubbingRef = useRef(false);
+  const lastScrubTimeRef = useRef<number>(0);
+  const pendingScrubTimeRef = useRef<number | null>(null);
+  const scrubSeekRafRef = useRef(0);
   const activeMainOrderIndexRef = useRef(0);
   const draggedMainSegmentRef = useRef<number | null>(null);
   const knownVideoDurationRef = useRef(0);
@@ -3261,6 +3267,9 @@ export default function Home() {
   function handleVideoTimeUpdate() {
     const video = videoRef.current;
     if (!video) return;
+    // While scrubbing, the playhead is driven directly; skip the state update so
+    // the whole editor doesn't re-render on every preview seek.
+    if (scrubbingRef.current) return;
     setCurrentTime(video.currentTime);
     syncImportedAudio(video.currentTime);
     if (reviewingCut !== null) {
@@ -3364,10 +3373,50 @@ export default function Home() {
     });
   }
 
-  function seekPlayheadFromClient(clientX: number, element: HTMLElement) {
-    if (!videoDuration) return;
-    const bounds = element.getBoundingClientRect();
-    seekMainTimelineTime(clamp((clientX - bounds.left) / Math.max(1, bounds.width)) * videoDuration);
+  // Maps an edited-timeline time to the real source time (accounts for cut/reordered segments).
+  function editedTimeToSource(requested: number) {
+    if (!orderedVideoSegments.length) return requested;
+    let elapsed = 0;
+    for (let index = 0; index < orderedVideoSegments.length; index += 1) {
+      const segment = orderedVideoSegments[index];
+      const duration = segment.end - segment.start;
+      if (requested <= elapsed + duration || index === orderedVideoSegments.length - 1) {
+        activeMainOrderIndexRef.current = index;
+        return segment.start + clamp(requested - elapsed, 0, duration);
+      }
+      elapsed += duration;
+    }
+    return requested;
+  }
+
+  // Runs at most once per frame; only issues a new seek when the previous one is
+  // done, so the decoder never backs up (that backlog is what felt "heavy").
+  function scheduleScrubSeek() {
+    if (scrubSeekRafRef.current) return;
+    scrubSeekRafRef.current = requestAnimationFrame(() => {
+      scrubSeekRafRef.current = 0;
+      const time = pendingScrubTimeRef.current;
+      const video = videoRef.current;
+      if (time == null || !video) return;
+      if (video.seeking) { scheduleScrubSeek(); return; }
+      pendingScrubTimeRef.current = null;
+      const target = Math.max(0, Math.min(video.duration || videoDuration, time));
+      const fastSeek = (video as HTMLVideoElement & { fastSeek?: (t: number) => void }).fastSeek;
+      if (typeof fastSeek === "function") fastSeek.call(video, target);
+      else video.currentTime = target;
+    });
+  }
+
+  function updateScrub(clientX: number) {
+    const geom = scrubGeomRef.current;
+    if (!geom || !videoDuration) return;
+    const fraction = clamp((clientX - geom.left) / Math.max(1, geom.width), 0, 1);
+    // Move the white line instantly — no React re-render, so it never lags.
+    if (playheadElRef.current) playheadElRef.current.style.left = `${fraction * 100}%`;
+    const sourceTime = editedTimeToSource(fraction * videoDuration);
+    lastScrubTimeRef.current = sourceTime;
+    pendingScrubTimeRef.current = sourceTime;
+    scheduleScrubSeek();
   }
 
   function beginPlayheadDrag(event: React.PointerEvent<HTMLButtonElement>) {
@@ -3376,20 +3425,28 @@ export default function Home() {
     playheadDragRef.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
     const layer = event.currentTarget.parentElement;
-    if (layer) seekPlayheadFromClient(event.clientX, layer);
+    if (!layer || !videoDuration) return;
+    const bounds = layer.getBoundingClientRect();
+    scrubGeomRef.current = { left: bounds.left, width: bounds.width };
+    scrubbingRef.current = true;
+    if (videoRef.current && !videoRef.current.paused) videoRef.current.pause();
+    updateScrub(event.clientX);
   }
 
   function movePlayheadDrag(event: React.PointerEvent<HTMLButtonElement>) {
     if (playheadDragRef.current !== event.pointerId) return;
-    const layer = event.currentTarget.parentElement;
-    const clientX = event.clientX;
-    if (layer) scheduleDragUpdate(() => seekPlayheadFromClient(clientX, layer));
+    event.preventDefault();
+    updateScrub(event.clientX);
   }
 
   function endPlayheadDrag(event: React.PointerEvent<HTMLButtonElement>) {
     if (playheadDragRef.current !== event.pointerId) return;
     playheadDragRef.current = null;
+    scrubGeomRef.current = null;
+    scrubbingRef.current = false;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    // Commit the final position once, re-syncing React state + audio.
+    seekVideo(lastScrubTimeRef.current);
   }
 
   function beginTimelineResize(event: React.PointerEvent<HTMLDivElement>) {
@@ -6678,6 +6735,7 @@ export default function Home() {
           <div className="timeline-playhead-layer" aria-label="Cursor de reprodução arrastável">
             {timelineMarkers.map((marker) => <button key={marker.id} className="timeline-marker" style={{ left: `${videoDuration ? marker.time / videoDuration * 100 : 0}%`, "--marker-color": marker.color } as React.CSSProperties} onClick={(event) => { event.stopPropagation(); seekMainTimelineTime(marker.time); }} onDoubleClick={(event) => { event.stopPropagation(); pushEditorHistory(); setTimelineMarkers((current) => current.filter((item) => item.id !== marker.id)); setToast("Marcador removido"); }} title={`${marker.label} · ${formatTime(marker.time)} · duplo clique para excluir`}><span>{marker.label}</span></button>)}
             <button
+              ref={playheadElRef}
               className="timeline-global-playhead"
               style={{ left: `${videoDuration ? (mainTimelineCurrentTime / videoDuration) * 100 : 0}%` }}
               onPointerDown={beginPlayheadDrag}
