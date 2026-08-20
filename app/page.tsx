@@ -3,6 +3,7 @@
 import {
   ChangeEvent,
   DragEvent,
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -481,8 +482,13 @@ const Icon = ({ children }: { children: React.ReactNode }) => (
   <span className="icon" aria-hidden="true">{children}</span>
 );
 
-function WaveformCanvas({ samples, color = "#66e0e1", quietColor = "#f4c94e", quietThreshold = .075, className = "" }: {
+// `from`/`to` select a slice of `samples` without allocating a new array, so the
+// clip waveforms keep a stable `samples` reference and only redraw when their
+// range actually changes (not on every editor re-render).
+const WaveformCanvas = memo(function WaveformCanvas({ samples, from, to, color = "#66e0e1", quietColor = "#f4c94e", quietThreshold = .075, className = "" }: {
   samples: number[];
+  from?: number;
+  to?: number;
   color?: string;
   quietColor?: string;
   quietThreshold?: number;
@@ -494,6 +500,8 @@ function WaveformCanvas({ samples, color = "#66e0e1", quietColor = "#f4c94e", qu
     const container = containerRef.current;
     const canvas = canvasRef.current;
     if (!container || !canvas) return;
+    const start = Math.max(0, Math.floor(from ?? 0));
+    const end = Math.min(samples.length, Math.ceil(to ?? samples.length));
     let frame = 0;
     const draw = () => {
       const context = canvas.getContext("2d");
@@ -507,7 +515,8 @@ function WaveformCanvas({ samples, color = "#66e0e1", quietColor = "#f4c94e", qu
       canvas.style.height = `${height}px`;
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
       context.clearRect(0, 0, width, height);
-      if (!samples.length) return;
+      const total = end - start;
+      if (total <= 0) return;
       const center = height / 2;
       const maxAmplitude = Math.max(1, center - 1);
       // Thin rounded mirrored bars at pixel density: stays smooth and reveals
@@ -519,10 +528,10 @@ function WaveformCanvas({ samples, color = "#66e0e1", quietColor = "#f4c94e", qu
       const radius = barWidth / 2;
       const inset = (width - columns * step + gap) / 2;
       for (let column = 0; column < columns; column += 1) {
-        const from = Math.floor((column / columns) * samples.length);
-        const to = Math.max(from + 1, Math.floor(((column + 1) / columns) * samples.length));
+        const columnStart = start + Math.floor((column / columns) * total);
+        const columnEnd = Math.max(columnStart + 1, start + Math.floor(((column + 1) / columns) * total));
         let peak = 0;
-        for (let index = from; index < to; index += 1) peak = Math.max(peak, samples[index] || 0);
+        for (let index = columnStart; index < columnEnd; index += 1) peak = Math.max(peak, samples[index] || 0);
         const quiet = peak < quietThreshold;
         const amplitude = Math.max(barWidth * .55, Math.pow(peak, .82) * maxAmplitude);
         const x = inset + column * step;
@@ -545,9 +554,9 @@ function WaveformCanvas({ samples, color = "#66e0e1", quietColor = "#f4c94e", qu
       observer.disconnect();
       cancelAnimationFrame(frame);
     };
-  }, [samples, color, quietColor, quietThreshold]);
+  }, [samples, from, to, color, quietColor, quietThreshold]);
   return <div ref={containerRef} className={`waveform-canvas ${className}`} aria-hidden="true"><canvas ref={canvasRef} /></div>;
-}
+});
 
 function formatTime(value: number) {
   if (!Number.isFinite(value)) return "0:00";
@@ -6533,7 +6542,7 @@ export default function Home() {
                 return <div key={`${clip.id}-${sourceStart}-${clip.sourceEnd}`} role="button" tabIndex={0} className={`factory-video-clip ${clip.section} ${selected ? "selected" : ""}`} style={{ left: `${left / sequenceDuration * 100}%`, width: `${cleanDuration / sequenceDuration * 100}%` }} onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "factory", index }); seekVideo(left); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setTimelineSelection({ kind: "factory", index }); seekVideo(left); } }} title={`${label}: arraste as bordas para ajustar a fala`}>
                   <span className="factory-clip-head"><b>{label}</b><em>{formatTime(cleanDuration)}</em></span>
                   <span className="factory-clip-thumbnails" aria-hidden="true">{Array.from({ length: Math.max(2, Math.min(8, Math.round(cleanDuration * 1.4))) }, (_, frame) => <i key={frame} style={{ backgroundPosition: `${(frame * 23 + index * 17) % 100}% center` }} />)}</span>
-                  {waveformSamples.length > 0 && <span className="real-waveform factory-clip-waveform">{waveformSamples.slice(sampleStart, sampleEnd).map((sample, sampleIndex) => <i key={sampleIndex} className={sample < .075 ? "quiet" : ""} style={{ height: `${Math.max(4, sample * 92)}%` }} />)}</span>}
+                  {waveformSamples.length > 0 && <WaveformCanvas className="factory-clip-waveform" samples={waveformSamples} from={sampleStart} to={sampleEnd} />}
                   <span className="factory-link-indicator" aria-hidden="true">↔</span>
                   <button className="factory-trim-handle start" aria-label={`Ajustar início do ${label}`} onPointerDown={(event) => beginFactoryTrim(event, index, "start")} onPointerMove={moveFactoryTrim} onPointerUp={endFactoryTrim} onPointerCancel={endFactoryTrim}><i /></button>
                   <button className="factory-trim-handle end" aria-label={`Ajustar fim do ${label}`} onPointerDown={(event) => beginFactoryTrim(event, index, "end")} onPointerMove={moveFactoryTrim} onPointerUp={endFactoryTrim} onPointerCancel={endFactoryTrim}><i /></button>
@@ -6562,7 +6571,7 @@ export default function Home() {
                     seekVideo(splitTime);
                   }}
                   title="Clique para selecionar · arraste para trocar de posição · duplo clique para dividir"
-                ><span className="clip-name">{orderedVideoSegments.length === 1 ? "Vídeo principal" : `Vídeo ${index + 1}`}</span><i className="clip-drag-grip">⠿</i>{waveformSamples.length > 0 && <span className="real-waveform clip-waveform" aria-label="Forma de onda real deste trecho">{waveformSamples.slice(Math.floor(segment.start / (videoDuration || 1) * waveformSamples.length), Math.max(1, Math.ceil(segment.end / (videoDuration || 1) * waveformSamples.length))).map((sample, sampleIndex) => <i key={sampleIndex} className={sample < .075 ? "quiet" : ""} style={{ height: `${Math.max(4, sample * 92)}%` }} />)}</span>}{index > 0 && <button className="main-trim-handle start" aria-label={`Ajustar início do vídeo ${index + 1}`} onPointerDown={(event) => beginMainTrim(event, index, "start")} onPointerMove={moveMainTrim} onPointerUp={endMainTrim} onPointerCancel={endMainTrim} />}{index < orderedVideoSegments.length - 1 && <button className="main-trim-handle end" aria-label={`Ajustar fim do vídeo ${index + 1}`} onPointerDown={(event) => beginMainTrim(event, index, "end")} onPointerMove={moveMainTrim} onPointerUp={endMainTrim} onPointerCancel={endMainTrim} />}</div>
+                ><span className="clip-name">{orderedVideoSegments.length === 1 ? "Vídeo principal" : `Vídeo ${index + 1}`}</span><i className="clip-drag-grip">⠿</i>{waveformSamples.length > 0 && <WaveformCanvas className="clip-waveform" samples={waveformSamples} from={Math.floor(segment.start / (videoDuration || 1) * waveformSamples.length)} to={Math.max(1, Math.ceil(segment.end / (videoDuration || 1) * waveformSamples.length))} />}{index > 0 && <button className="main-trim-handle start" aria-label={`Ajustar início do vídeo ${index + 1}`} onPointerDown={(event) => beginMainTrim(event, index, "start")} onPointerMove={moveMainTrim} onPointerUp={endMainTrim} onPointerCancel={endMainTrim} />}{index < orderedVideoSegments.length - 1 && <button className="main-trim-handle end" aria-label={`Ajustar fim do vídeo ${index + 1}`} onPointerDown={(event) => beginMainTrim(event, index, "end")} onPointerMove={moveMainTrim} onPointerUp={endMainTrim} onPointerCancel={endMainTrim} />}</div>
               ))}
               {silentRanges.map((range, index) => (
                 <button
