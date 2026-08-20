@@ -966,6 +966,10 @@ export default function Home() {
   const deleteTimelineRef = useRef<(target: ContextTarget) => void>(() => {});
   const exportSceneRef = useRef<(superClip?: SuperClip) => Promise<void>>(async () => {});
   const pendingSceneVideoUrlRef = useRef<string>("");
+  const exportingRef = useRef(false);
+  const exportProgressBarRef = useRef<HTMLProgressElement>(null);
+  const exportProgressLabelRef = useRef<HTMLElement>(null);
+  const exportButtonProgressRef = useRef<HTMLElement>(null);
   const playbackMonitorRef = useRef<number | null>(null);
   const playbackMonitorUsesRVFC = useRef(false);
   const advancePlaybackRef = useRef<() => void>(() => {});
@@ -3276,6 +3280,9 @@ export default function Home() {
   function handleVideoTimeUpdate() {
     const video = videoRef.current;
     if (!video) return;
+    // During export the render loop drives the video; skipping the state update
+    // keeps the main thread free so frames are captured at full rate (not ~4fps).
+    if (exportingRef.current) return;
     // While scrubbing, the playhead is driven directly; skip the state update so
     // the whole editor doesn't re-render on every preview seek.
     if (scrubbingRef.current) return;
@@ -4746,6 +4753,15 @@ export default function Home() {
     context.restore();
   }
 
+  // Updates the export progress straight in the DOM so the render loop never
+  // triggers a React re-render (which would starve frame capture).
+  function paintExportProgress(percent: number) {
+    const rounded = Math.min(100, Math.max(0, Math.round(percent)));
+    if (exportProgressBarRef.current) exportProgressBarRef.current.value = rounded;
+    if (exportProgressLabelRef.current) exportProgressLabelRef.current.textContent = `${rounded}% concluído`;
+    if (exportButtonProgressRef.current) exportButtonProgressRef.current.textContent = String(rounded);
+  }
+
   async function exportVideo(superClip?: SuperClip) {
     const video = videoRef.current;
     if (!video || !videoFile || !video.videoWidth) {
@@ -5228,11 +5244,13 @@ export default function Home() {
     const exportMainSegments = orderedVideoSegments.length ? orderedVideoSegments : [{ start: 0, end: video.duration }];
     const exportMainDuration = exportMainSegments.reduce((total, segment) => total + segment.end - segment.start, 0) || video.duration;
     let exportMainIndex = 0;
+    let lastProgressUpdate = 0;
     video.loop = false;
     video.currentTime = exportMainSegments[0]?.start || 0;
     video.playbackRate = playbackSpeed;
     video.muted = settings.removeAudio;
 
+    exportingRef.current = true;
     await new Promise<void>((resolve, reject) => {
       let raf = 0;
       if (!superClip) {
@@ -5394,7 +5412,13 @@ export default function Home() {
         const completedDuration = exportMainSegments.slice(0, exportMainIndex).reduce((total, segment) => total + segment.end - segment.start, 0);
         const activeExportSegment = exportMainSegments[exportMainIndex];
         const editedProgress = completedDuration + Math.max(0, video.currentTime - (activeExportSegment?.start || 0));
-        setExportProgress(Math.min(100, Math.round(editedProgress / Math.max(.01, exportMainDuration) * 100)));
+        // Paint progress directly to the DOM (no React re-render) so the draw loop
+        // keeps the main thread and captures at full frame rate.
+        const nowMs = performance.now();
+        if (nowMs - lastProgressUpdate > 80) {
+          lastProgressUpdate = nowMs;
+          paintExportProgress(editedProgress / Math.max(.01, exportMainDuration) * 100);
+        }
         raf = requestAnimationFrame(render);
       };
       video.onended = () => {
@@ -5411,6 +5435,7 @@ export default function Home() {
       }
       video.play().then(() => render()).catch(reject);
     });
+    exportingRef.current = false;
 
     if (superClip) {
       video.currentTime = originalTime;
@@ -5562,7 +5587,7 @@ export default function Home() {
           <label className="platform-select"><span>Destino</span><select value={platform} onChange={(event) => setPlatform(event.target.value as keyof typeof SAFE_ZONES)}><option value="instagram">Instagram Reels</option><option value="tiktok">TikTok</option></select></label>
           <button className="button ghost" onClick={saveTemplate}><Icon>▣</Icon> Salvar modelo</button>
           <button className="button primary" onClick={() => activePanel === "factory" ? editFirstSelectedFactoryProject() : setShowExportDialog(true)} disabled={activePanel === "factory" ? factoryPreparing || !factorySelectedIds.length : exporting || !videoFile}>
-            {activePanel === "factory" ? (factoryPreparing ? "Preparando editor…" : "Editar selecionados") : (exporting ? `Exportando ${exportProgress}%` : "Baixar vídeo")}
+            {activePanel === "factory" ? (factoryPreparing ? "Preparando editor…" : "Editar selecionados") : (exporting ? <>Exportando <span ref={exportButtonProgressRef}>{exportProgress}</span>%</> : "Baixar vídeo")}
           </button>
         </div>
       </header>
@@ -6808,7 +6833,7 @@ export default function Home() {
           </div>
         </div>
       )}
-      {exporting && <div className="export-overlay"><div><span className="spinner" /><strong>Exportando em {EXPORT_PRESETS[exportPresetId].name}</strong><p>{EXPORT_PRESETS[exportPresetId].width} × {EXPORT_PRESETS[exportPresetId].height} · {EXPORT_PRESETS[exportPresetId].fps} fps. Mantenha esta aba aberta.</p><progress value={exportProgress} max="100" /><small className="export-progress-label">{exportProgress}% concluído</small></div></div>}
+      {exporting && <div className="export-overlay"><div><span className="spinner" /><strong>Exportando em {EXPORT_PRESETS[exportPresetId].name}</strong><p>{EXPORT_PRESETS[exportPresetId].width} × {EXPORT_PRESETS[exportPresetId].height} · {EXPORT_PRESETS[exportPresetId].fps} fps. Mantenha esta aba aberta.</p><progress ref={exportProgressBarRef} value={exportProgress} max="100" /><small ref={exportProgressLabelRef} className="export-progress-label">{exportProgress}% concluído</small></div></div>}
       {factoryExporting && <div className="export-overlay"><div><span className="spinner" /><strong>{factoryExportStatus}</strong><p>Combinando Hook → Corpo → CTA, removendo pausas e equilibrando o volume em {EXPORT_PRESETS[exportPresetId].name}.</p><progress value={factoryExportProgress} max="100" /><small className="export-progress-label">{factoryExportProgress}% do lote concluído</small></div></div>}
       {factoryPreparing && <div className="export-overlay"><div><span className="spinner" /><strong>{factoryExportStatus || "Preparando vídeo para o editor"}</strong><p>Unindo Hook, Corpo e CTA, aplicando os cortes automáticos e carregando uma variação por vez.</p><small className="export-progress-label">Mantenha esta aba aberta.</small></div></div>}
     </main>
