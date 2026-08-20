@@ -647,7 +647,8 @@ button { color: inherit; }
 .timeline-scroll-area { width: 100%; min-height: 120px; flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; scrollbar-color: #5b5e67 #24262b; }
 .timeline-scaled-content { position: relative; min-width: 100%; }
 .timeline-ruler-row { height: 25px; }
-.timeline-ruler { position: relative; border-bottom: 1px solid #363840; }
+.timeline-ruler { position: relative; border-bottom: 1px solid #363840; cursor: pointer; }
+.timeline-ruler span { pointer-events: none; }
 .timeline-ruler:after { content: ""; position: absolute; inset: 8px 0 0; background: repeating-linear-gradient(to right, #565962 0 1px, transparent 1px 2.5%); opacity: .38; pointer-events: none; }
 .timeline-ruler span { position: absolute; top: 4px; transform: translateX(-50%); font-family: var(--font-geist-mono); color: #868992; font-size: 8px; z-index: 1; }
 .timeline-ruler span:first-child { transform: none; }

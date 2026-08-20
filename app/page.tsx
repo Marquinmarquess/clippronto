@@ -3315,11 +3315,14 @@ export default function Home() {
     const video = videoRef.current;
     if (!video) return;
     setReviewingCut(null);
-    video.currentTime = Math.max(0, Math.min(video.duration || videoDuration, time));
-    const segmentIndex = orderedVideoSegments.findIndex((segment) => video.currentTime >= segment.start - .04 && video.currentTime < segment.end + .04);
+    // Use the exact requested time (not the frame-snapped read-back) so the
+    // playhead and cuts land precisely where the user clicked.
+    const target = Math.max(0, Math.min(video.duration || videoDuration, time));
+    video.currentTime = target;
+    const segmentIndex = orderedVideoSegments.findIndex((segment) => target >= segment.start - .04 && target < segment.end + .04);
     if (segmentIndex >= 0) activeMainOrderIndexRef.current = segmentIndex;
-    setCurrentTime(video.currentTime);
-    syncImportedAudio(video.currentTime, { force: true });
+    setCurrentTime(target);
+    syncImportedAudio(target, { force: true });
   }
 
   function seekFromMainTimeline(event: React.MouseEvent<HTMLDivElement>) {
@@ -6508,7 +6511,7 @@ export default function Home() {
           <div className="timeline-scaled-content" style={{ width: `${timelineZoom * 100}%` }}>
           <div className="timeline-ruler-row">
             <div className="track-label" />
-            <div className="timeline-ruler">
+            <div className="timeline-ruler" onClick={seekFromMainTimeline} title="Clique para mover o cursor para este ponto">
               {Array.from({ length: timelineTickCount }, (_, index) => index / (timelineTickCount - 1)).map((position) => (
                 <span key={position} style={{ left: `${position * 100}%` }}>{formatTime(videoDuration * position)}</span>
               ))}
