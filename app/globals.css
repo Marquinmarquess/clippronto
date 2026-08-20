@@ -1177,6 +1177,13 @@ input:focus { border-color: var(--violet); box-shadow: 0 0 0 3px rgba(109,88,243
 .export-presets em { padding: 3px 5px; border-radius: 999px; background: var(--lime); color: #24251f; font-size: 6px; font-style: normal; font-weight: 900; text-transform: uppercase; }
 .export-presets strong { display: block; margin-top: 7px; color: var(--violet); font-size: 15px; }
 .export-presets small { display: block; min-height: 22px; margin-top: 4px; color: #85878e; font-size: 8px; line-height: 1.35; }
+.export-fps { margin-top: 14px; }
+.export-fps .field-label { margin-bottom: 6px; }
+.export-fps-options { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.export-fps-options > button { padding: 10px 13px; border: 1px solid #dddde2; border-radius: 12px; background: white; text-align: left; cursor: pointer; }
+.export-fps-options > button.active { border-color: var(--violet); background: #f5f2ff; box-shadow: inset 0 0 0 1px var(--violet); }
+.export-fps-options strong { display: block; color: var(--violet); font-size: 14px; }
+.export-fps-options small { display: block; margin-top: 2px; color: #85878e; font-size: 8px; }
 .export-source-note { display: flex; justify-content: space-between; align-items: center; margin: 12px 0; padding: 9px 11px; border-radius: 9px; background: #f6f6f7; color: #777981; font-size: 9px; }
 .export-source-note b { color: #303136; }
 .export-confirm { width: 100%; }

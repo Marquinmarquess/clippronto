@@ -876,6 +876,7 @@ export default function Home() {
   const [exportProgress, setExportProgress] = useState(0);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportPresetId, setExportPresetId] = useState<ExportPresetId>("full-hd");
+  const [exportFps, setExportFps] = useState<30 | 60>(30);
   const [brollClips, setBrollClips] = useState<BrollClip[]>([]);
   const [additionalVideoMode, setAdditionalVideoMode] = useState<"sequence" | "overlay">("sequence");
   const [brollLink, setBrollLink] = useState("");
@@ -4784,6 +4785,9 @@ export default function Home() {
       setExportProgress(0);
     }
     const exportPreset = superClip ? superClip.preset : EXPORT_PRESETS[exportPresetId];
+    // Chosen capture rate (30 or 60). Bitrate scales with fps to keep quality.
+    const effectiveFps = superClip ? superClip.preset.fps : exportFps;
+    const effectiveBitrate = Math.round(exportPreset.bitrate * (effectiveFps / 30));
     await Promise.all([...Object.values(settings.textStyles), ...extraTextLayers.map((layer) => layer.style)].map((style) =>
       document.fonts.load(`${style.fontWeight} ${style.fontSize}px "${style.fontFamily}"`),
     ));
@@ -5159,7 +5163,7 @@ export default function Home() {
       return { clip, video: auxiliaryVideo };
     }));
 
-    const canvasStream = superClip ? null : canvas.captureStream(exportPreset.fps);
+    const canvasStream = superClip ? null : canvas.captureStream(effectiveFps);
     const captureVideo = video as HTMLVideoElement & { captureStream?: () => MediaStream; webkitCaptureStream?: () => MediaStream };
     const sourceStream = captureVideo.captureStream?.() || captureVideo.webkitCaptureStream?.();
     const removedBefore = (time: number) => settings.removeSilence
@@ -5233,7 +5237,7 @@ export default function Home() {
     if (superClip) {
       recorder = superClip.recorder;
     } else {
-      const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: exportPreset.bitrate };
+      const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: effectiveBitrate };
       if (mimeType) recorderOptions.mimeType = mimeType;
       recorder = new MediaRecorder(canvasStream!, recorderOptions);
       recorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
@@ -5498,7 +5502,7 @@ export default function Home() {
     setExporting(true);
     setShowExportDialog(false);
     setExportProgress(0);
-    const preset = EXPORT_PRESETS[exportPresetId];
+    const preset = { ...EXPORT_PRESETS[exportPresetId], fps: exportFps, bitrate: Math.round(EXPORT_PRESETS[exportPresetId].bitrate * (exportFps / 30)) };
     const canvas = document.createElement("canvas");
     canvas.width = preset.width;
     canvas.height = preset.height;
@@ -6827,13 +6831,20 @@ export default function Home() {
                 </button>
               ))}
             </div>
+            <div className="export-fps" role="radiogroup" aria-label="Quadros por segundo">
+              <span className="field-label">Quadros por segundo</span>
+              <div className="export-fps-options">
+                <button className={exportFps === 30 ? "active" : ""} role="radio" aria-checked={exportFps === 30} onClick={() => setExportFps(30)}><strong>30 fps</strong><small>Padrão</small></button>
+                <button className={exportFps === 60 ? "active" : ""} role="radio" aria-checked={exportFps === 60} onClick={() => setExportFps(60)}><strong>60 fps</strong><small>Mais fluido</small></button>
+              </div>
+            </div>
             <div className="export-source-note"><span>Vídeo original</span><b>{videoRef.current?.videoWidth || 0} × {videoRef.current?.videoHeight || 0}</b></div>
-            <button className="button primary export-confirm" onClick={() => exportVideo()}>Exportar em {EXPORT_PRESETS[exportPresetId].name}</button>
-            <small className="export-hint">HD é a opção mais leve. 2K e 4K usam mais memória e podem demorar mais.</small>
+            <button className="button primary export-confirm" onClick={() => exportVideo()}>Exportar em {EXPORT_PRESETS[exportPresetId].name} · {exportFps} fps</button>
+            <small className="export-hint">60 fps deixa o movimento mais fluido (melhor quando o vídeo original é 60 fps) e gera um arquivo maior. HD é a opção mais leve.</small>
           </div>
         </div>
       )}
-      {exporting && <div className="export-overlay"><div><span className="spinner" /><strong>Exportando em {EXPORT_PRESETS[exportPresetId].name}</strong><p>{EXPORT_PRESETS[exportPresetId].width} × {EXPORT_PRESETS[exportPresetId].height} · {EXPORT_PRESETS[exportPresetId].fps} fps. Mantenha esta aba aberta.</p><progress ref={exportProgressBarRef} value={exportProgress} max="100" /><small ref={exportProgressLabelRef} className="export-progress-label">{exportProgress}% concluído</small></div></div>}
+      {exporting && <div className="export-overlay"><div><span className="spinner" /><strong>Exportando em {EXPORT_PRESETS[exportPresetId].name}</strong><p>{EXPORT_PRESETS[exportPresetId].width} × {EXPORT_PRESETS[exportPresetId].height} · {exportFps} fps. Mantenha esta aba aberta.</p><progress ref={exportProgressBarRef} value={exportProgress} max="100" /><small ref={exportProgressLabelRef} className="export-progress-label">{exportProgress}% concluído</small></div></div>}
       {factoryExporting && <div className="export-overlay"><div><span className="spinner" /><strong>{factoryExportStatus}</strong><p>Combinando Hook → Corpo → CTA, removendo pausas e equilibrando o volume em {EXPORT_PRESETS[exportPresetId].name}.</p><progress value={factoryExportProgress} max="100" /><small className="export-progress-label">{factoryExportProgress}% do lote concluído</small></div></div>}
       {factoryPreparing && <div className="export-overlay"><div><span className="spinner" /><strong>{factoryExportStatus || "Preparando vídeo para o editor"}</strong><p>Unindo Hook, Corpo e CTA, aplicando os cortes automáticos e carregando uma variação por vez.</p><small className="export-progress-label">Mantenha esta aba aberta.</small></div></div>}
     </main>
