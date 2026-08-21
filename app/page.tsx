@@ -849,6 +849,7 @@ export default function Home() {
   const [platform, setPlatform] = useState<keyof typeof SAFE_ZONES>("instagram");
   const [showSafeZone, setShowSafeZone] = useState(false);
   const [templateMode, setTemplateMode] = useState<TemplateMode>("ranking");
+  const [breakdownActive, setBreakdownActive] = useState(false);
   const [rankingSettings, setRankingSettings] = useState<RankingSettings>(() => completeRankingSettings());
   const [rankingScenes, setRankingScenes] = useState<RankingScene[]>([{ id: "ranking-scene-default", title: DEFAULT_SETTINGS.title, category: DEFAULT_SETTINGS.category, duration: 5 }]);
   const [selectedRankingScene, setSelectedRankingScene] = useState(0);
@@ -1684,6 +1685,7 @@ export default function Home() {
   }
 
   function activateRankingTemplate() {
+    setBreakdownActive(false);
     setTemplateMode("ranking");
     setExtraTextLayers([]);
     setSettings(DEFAULT_SETTINGS);
@@ -1696,6 +1698,7 @@ export default function Home() {
   }
 
   function activateTimedRankingTemplate() {
+    setBreakdownActive(false);
     const rankingProducts = Array.from({ length: 10 }, (_, index) => ({
       name: `Item ${index + 1}`,
       label: "",
@@ -1750,6 +1753,7 @@ export default function Home() {
   }
 
   function activateFreeTemplate() {
+    setBreakdownActive(false);
     setTemplateMode("free");
     setExtraTextLayers([]);
     setSettings({
@@ -1767,6 +1771,7 @@ export default function Home() {
   }
 
   function activateQuestionBoxTemplate() {
+    setBreakdownActive(false);
     const emptyProducts = DEFAULT_SETTINGS.products.map((_, index) => ({ name: `Imagem ${index + 1}`, label: "" }));
     setTemplateMode("question-box");
     setQuestionBox({ ...DEFAULT_QUESTION_BOX });
@@ -1780,6 +1785,7 @@ export default function Home() {
   }
 
   function activateCinematicTemplate() {
+    setBreakdownActive(false);
     setTemplateMode("cinematic");
     setExtraTextLayers([]);
     const emptyProducts = DEFAULT_SETTINGS.products.map((_, index) => ({ name: `Imagem ${index + 1}`, label: "" }));
@@ -1792,6 +1798,7 @@ export default function Home() {
   }
 
   function activateReactTemplate() {
+    setBreakdownActive(false);
     setTemplateMode("react");
     setExtraTextLayers([]);
     const emptyProducts = DEFAULT_SETTINGS.products.map((_, index) => ({ name: `Imagem ${index + 1}`, label: "" }));
@@ -1844,6 +1851,7 @@ export default function Home() {
   }
 
   function activateRoutineTemplate() {
+    setBreakdownActive(false);
     const products = ROUTINE_PRODUCTS.map((product) => ({ ...product }));
     setTemplateMode("routine");
     setExtraTextLayers([]);
@@ -2388,11 +2396,14 @@ export default function Home() {
 
   function activateBreakdownTemplate() {
     setTemplateMode("free");
+    setBreakdownActive(true);
     setExtraTextLayers([]);
     setSettings({ ...DEFAULT_SETTINGS, title: "", category: "" });
     setProducts([]);
     setCanvasLayouts(FREE_CANVAS_LAYOUTS);
     setSelectedElement(null);
+    setTimelineCollapsed(false);
+    setTimelineHeight((current) => Math.max(430, current));
     const total = videoDuration || (BREAKDOWN_CUT_OFFSETS[BREAKDOWN_CUT_OFFSETS.length - 1] + 6);
     const offsets = BREAKDOWN_CUT_OFFSETS.filter((time) => time < total - 1);
     // Preenche o resto do vídeo mantendo a cadência (~a cada 5s) se o vídeo for mais longo.
@@ -2418,7 +2429,7 @@ export default function Home() {
     }));
     setBrollClips(slots);
     setActivePanel("broll");
-    setToast(videoFile ? `Modelo Cortes: ${slots.length} cutaways prontos para preencher` : "Modelo Cortes carregado · adicione o vídeo principal");
+    setToast(videoFile ? `Cortes: ${slots.length} cutaways na faixa SOBREPOSIÇÃO — clique em cada um para adicionar imagem/vídeo` : "Cortes ativado — adicione o vídeo principal e os cutaways aparecerão na timeline");
   }
 
   function createSoundEffectBuffer(context: AudioContext, effect: SoundEffectId) {
@@ -3238,6 +3249,7 @@ export default function Home() {
   }
 
   function loadTemplate(template: SavedTemplate) {
+    setBreakdownActive(false);
     const loadedExtraTexts = (template.extraTexts || []).map((layer) => ({ ...layer, style: { ...DEFAULT_TEXT_STYLES.extra, ...layer.style } }));
     const loadedLayouts = { ...(template.layouts || DEFAULT_CANVAS_LAYOUTS) } as CanvasLayouts;
     const productPositions = [18, 50, 82];
@@ -5750,7 +5762,7 @@ export default function Home() {
               <span className="template-thumb question-box"><i>Qual é a sua dúvida?</i><b>Escreva a pergunta aqui</b></span>
               <span><strong>Caixinha de pergunta</strong><small>Texto editável · posição livre</small></span>
             </button>
-            <button className={`template-card free-template ${templateMode === "free" ? "current" : ""}`} onClick={activateFreeTemplate}>
+            <button className={`template-card free-template ${templateMode === "free" && !breakdownActive ? "current" : ""}`} onClick={activateFreeTemplate}>
               <span className="template-thumb free"><i>Aa</i><i>□</i><i>＋</i></span>
               <span><strong>Modelo livre</strong><small>Arraste textos e imagens</small></span>
             </button>
@@ -5758,7 +5770,7 @@ export default function Home() {
               <span className="template-thumb cinematic"><i>FILM</i><b>◫</b><small>♪</small></span>
               <span><strong>Cinematográfico</strong><small>B-roll, cortes e efeitos</small></span>
             </button>
-            <button className="template-card cortes-template" onClick={activateBreakdownTemplate}>
+            <button className={`template-card cortes-template ${breakdownActive ? "current" : ""}`} onClick={activateBreakdownTemplate}>
               <span className="template-thumb cortes"><b>◱</b><i>◧</i><small>♪</small></span>
               <span><strong>Cortes</strong><small>Cutaways + efeitos sobre seu vídeo</small></span>
             </button>
