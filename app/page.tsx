@@ -186,8 +186,11 @@ type VideoFocus = { x: number; y: number };
 type BrollClip = {
   id: string;
   name: string;
-  file: File;
-  url: string;
+  file?: File;
+  url?: string;
+  placeholder?: boolean;
+  mediaType?: "video" | "image";
+  slotLabel?: string;
   sourceUrl?: string;
   sourceStart: number;
   sourceDuration: number;
@@ -273,6 +276,10 @@ const SOUND_EFFECTS: Array<{ id: SoundEffectId; name: string; note: string }> = 
   { id: "shutter", name: "Corte seco", note: "Transição rápida" },
   { id: "sparkle", name: "Brilho premium", note: "Beleza e acabamento" },
 ];
+
+// Cadência de cutaways do modelo "Cortes" (ritmo de entrada dos recortes, em segundos).
+const BREAKDOWN_CUT_OFFSETS = [9.7, 22.4, 23.6, 26.9, 30.9, 33.8, 40.9, 42.6, 45.1, 51.7, 56.5, 61.4, 63.6, 66.7, 68.4, 72.1, 74.2, 81.2, 84.8];
+const BREAKDOWN_SFX: SoundEffectId[] = ["whoosh", "impact", "pop", "shutter"];
 
 const FACTORY_SECTIONS: Array<{ id: FactorySection; order: number; name: string; description: string; color: string }> = [
   { id: "hook", order: 1, name: "Hook", description: "Abertura que prende atenção", color: "#ffb84d" },
@@ -978,6 +985,8 @@ export default function Home() {
   const dragTaskRef = useRef<(() => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const brollInputRef = useRef<HTMLInputElement>(null);
+  const brollSlotInputRef = useRef<HTMLInputElement>(null);
+  const fillBrollTargetRef = useRef<string | null>(null);
   const mergeInputRef = useRef<HTMLInputElement>(null);
   const reactMediaInputRef = useRef<HTMLInputElement>(null);
   const reactTransparentCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -2342,9 +2351,74 @@ export default function Home() {
   function removeBroll(id: string) {
     setBrollClips((current) => {
       const removed = current.find((clip) => clip.id === id);
-      if (removed) URL.revokeObjectURL(removed.url);
+      if (removed?.url) URL.revokeObjectURL(removed.url);
       return current.filter((clip) => clip.id !== id);
     });
+  }
+
+  function openBrollSlotPicker(id: string) {
+    fillBrollTargetRef.current = id;
+    brollSlotInputRef.current?.click();
+  }
+
+  async function fillBrollSlot(file?: File | null) {
+    const id = fillBrollTargetRef.current;
+    fillBrollTargetRef.current = null;
+    if (!id || !file) return;
+    const isImage = file.type.startsWith("image/");
+    const isVideo = file.type.startsWith("video/");
+    if (!isImage && !isVideo) { setToast("Escolha uma imagem ou um vídeo para o cutaway"); return; }
+    const existing = brollClips.find((clip) => clip.id === id);
+    if (existing?.url) URL.revokeObjectURL(existing.url);
+    let sourceDuration = existing?.duration || 2.2;
+    if (isVideo) {
+      try { sourceDuration = await readVideoFileDuration(file) || sourceDuration; } catch { /* mantém a duração do slot */ }
+    }
+    updateBroll(id, {
+      file,
+      url: URL.createObjectURL(file),
+      mediaType: isImage ? "image" : "video",
+      placeholder: false,
+      name: file.name.replace(/\.[^.]+$/, ""),
+      sourceStart: 0,
+      sourceDuration,
+    });
+    setToast("Cutaway adicionado");
+  }
+
+  function activateBreakdownTemplate() {
+    setTemplateMode("free");
+    setExtraTextLayers([]);
+    setSettings({ ...DEFAULT_SETTINGS, title: "", category: "" });
+    setProducts([]);
+    setCanvasLayouts(FREE_CANVAS_LAYOUTS);
+    setSelectedElement(null);
+    const total = videoDuration || (BREAKDOWN_CUT_OFFSETS[BREAKDOWN_CUT_OFFSETS.length - 1] + 6);
+    const offsets = BREAKDOWN_CUT_OFFSETS.filter((time) => time < total - 1);
+    // Preenche o resto do vídeo mantendo a cadência (~a cada 5s) se o vídeo for mais longo.
+    let next = (offsets[offsets.length - 1] ?? 0) + 5;
+    while (next < total - 1) { offsets.push(Number(next.toFixed(1))); next += 5; }
+    const slots: BrollClip[] = offsets.map((start, index) => ({
+      id: crypto.randomUUID(),
+      name: `Cutaway ${index + 1}`,
+      slotLabel: `Cutaway ${index + 1}`,
+      placeholder: true,
+      duration: 2.2,
+      sourceStart: 0,
+      sourceDuration: 2.2,
+      timelineStart: start,
+      sfx: BREAKDOWN_SFX[index % BREAKDOWN_SFX.length],
+      focusX: 50,
+      focusY: 50,
+      layer: 0,
+      placement: "overlay",
+      overlayX: 4,
+      overlayY: 6,
+      overlayWidth: 92,
+    }));
+    setBrollClips(slots);
+    setActivePanel("broll");
+    setToast(videoFile ? `Modelo Cortes: ${slots.length} cutaways prontos para preencher` : "Modelo Cortes carregado · adicione o vídeo principal");
   }
 
   function createSoundEffectBuffer(context: AudioContext, effect: SoundEffectId) {
@@ -2416,7 +2490,7 @@ export default function Home() {
 
   async function autoFrameComplementary() {
     const clip = activeBroll || brollClips[0];
-    if (!clip) return setToast("Adicione uma cena complementar primeiro");
+    if (!clip || !clip.url) return setToast("Adicione uma cena complementar primeiro");
     setFocusStatus("scene");
     const video = document.createElement("video");
     video.src = clip.url;
@@ -4493,7 +4567,7 @@ export default function Home() {
         structureRanges.push({ section: clip.section, start: sectionStart, end: cleanCursor });
       });
       setBrollClips((current) => {
-        current.forEach((clip) => URL.revokeObjectURL(clip.url));
+        current.forEach((clip) => { if (clip.url) URL.revokeObjectURL(clip.url); });
         return [];
       });
       chooseVideo(file, { duration: editableVariant.duration, removedRanges, structureRanges });
@@ -4709,27 +4783,29 @@ export default function Home() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function drawCoverInRect(context: CanvasRenderingContext2D, video: HTMLVideoElement, destinationX: number, destinationY: number, width: number, height: number, focus: VideoFocus = { x: 50, y: 50 }, cropZoom = 1) {
-    const videoRatio = video.videoWidth / video.videoHeight;
+  function drawCoverInRect(context: CanvasRenderingContext2D, source: CanvasImageSource, destinationX: number, destinationY: number, width: number, height: number, focus: VideoFocus = { x: 50, y: 50 }, cropZoom = 1) {
+    const media = source as HTMLVideoElement & HTMLImageElement;
+    const naturalWidth = media.videoWidth || media.naturalWidth || 0;
+    const naturalHeight = media.videoHeight || media.naturalHeight || 0;
+    if (!naturalWidth || !naturalHeight) return;
+    const mediaRatio = naturalWidth / naturalHeight;
     const canvasRatio = width / height;
-    let sourceWidth = video.videoWidth;
-    let sourceHeight = video.videoHeight;
-    let sourceX = 0;
-    let sourceY = 0;
-    if (videoRatio > canvasRatio) {
-      sourceWidth = video.videoHeight * canvasRatio;
+    let sourceWidth = naturalWidth;
+    let sourceHeight = naturalHeight;
+    if (mediaRatio > canvasRatio) {
+      sourceWidth = naturalHeight * canvasRatio;
     } else {
-      sourceHeight = video.videoWidth / canvasRatio;
+      sourceHeight = naturalWidth / canvasRatio;
     }
     sourceWidth /= Math.max(1, cropZoom);
     sourceHeight /= Math.max(1, cropZoom);
-    sourceX = Math.max(0, Math.min(video.videoWidth - sourceWidth, video.videoWidth * focus.x / 100 - sourceWidth / 2));
-    sourceY = Math.max(0, Math.min(video.videoHeight - sourceHeight, video.videoHeight * focus.y / 100 - sourceHeight / 2));
-    context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, destinationX, destinationY, width, height);
+    const sourceX = Math.max(0, Math.min(naturalWidth - sourceWidth, naturalWidth * focus.x / 100 - sourceWidth / 2));
+    const sourceY = Math.max(0, Math.min(naturalHeight - sourceHeight, naturalHeight * focus.y / 100 - sourceHeight / 2));
+    context.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, destinationX, destinationY, width, height);
   }
 
-  function drawCover(context: CanvasRenderingContext2D, video: HTMLVideoElement, width: number, height: number, focus: VideoFocus = { x: 50, y: 50 }, cropZoom = 1) {
-    drawCoverInRect(context, video, 0, 0, width, height, focus, cropZoom);
+  function drawCover(context: CanvasRenderingContext2D, source: CanvasImageSource, width: number, height: number, focus: VideoFocus = { x: 50, y: 50 }, cropZoom = 1) {
+    drawCoverInRect(context, source, 0, 0, width, height, focus, cropZoom);
   }
 
   function styledCanvasText(context: CanvasRenderingContext2D, text: string, x: number, y: number, style: TextStyle, forceCenter = false) {
@@ -4831,7 +4907,7 @@ export default function Home() {
       compositionCanvas.height = canvas.height;
     }
     const compositionContext = superClip ? superClip.compositionContext : compositionCanvas.getContext("2d")!;
-    const drawCinematicBroll = (auxiliaryVideo: HTMLVideoElement, focus: VideoFocus, clip: BrollClip) => {
+    const drawCinematicBroll = (auxiliaryVideo: CanvasImageSource, focus: VideoFocus, clip: BrollClip) => {
       if (clip.placement === "overlay") {
         const requestedWidth = canvas.width * (clip.overlayWidth ?? 40) / 100;
         const overlayWidth = Math.min(canvas.width * .82, requestedWidth);
@@ -5177,9 +5253,15 @@ export default function Home() {
       drawQuestionText(questionBox.answer, innerX, innerY + promptHeight, innerWidth, innerHeight - promptHeight, "#292c32");
       context.restore();
     };
-    const exportBrollVideos = await Promise.all(overlayVideoClips.map(async (clip) => {
+    const exportBrollVideos = await Promise.all(overlayVideoClips.filter((clip) => clip.url).map(async (clip) => {
+      if (clip.mediaType === "image") {
+        const image = new Image();
+        image.src = clip.url!;
+        try { await image.decode(); } catch { /* imagem pode falhar em decodificar */ }
+        return { clip, video: image as CanvasImageSource, isImage: true };
+      }
       const auxiliaryVideo = document.createElement("video");
-      auxiliaryVideo.src = clip.url;
+      auxiliaryVideo.src = clip.url!;
       auxiliaryVideo.muted = true;
       auxiliaryVideo.playsInline = true;
       auxiliaryVideo.preload = "auto";
@@ -5188,7 +5270,7 @@ export default function Home() {
         auxiliaryVideo.onerror = () => reject(new Error(`Não foi possível preparar ${clip.name}`));
       });
       auxiliaryVideo.currentTime = clip.sourceStart;
-      return { clip, video: auxiliaryVideo };
+      return { clip, video: auxiliaryVideo as CanvasImageSource, isImage: false };
     }));
 
     const canvasStream = superClip ? null : canvas.captureStream(effectiveFps);
@@ -5300,7 +5382,7 @@ export default function Home() {
           } else {
             cancelAnimationFrame(raf);
             reactExportVideo?.pause();
-            exportBrollVideos.forEach(({ video: auxiliaryVideo }) => auxiliaryVideo.pause());
+            exportBrollVideos.forEach((entry) => { if (!entry.isImage) (entry.video as HTMLVideoElement).pause(); });
             video.pause();
             if (superClip) resolve();
             else if (recorder.state !== "inactive") recorder.stop();
@@ -5368,14 +5450,20 @@ export default function Home() {
         const activeExportBroll = [...exportBrollVideos]
           .sort((a, b) => (b.clip.layer ?? 0) - (a.clip.layer ?? 0))
           .find(({ clip }) => video.currentTime >= clip.timelineStart && video.currentTime < clip.timelineStart + clip.duration);
-        exportBrollVideos.forEach(({ video: auxiliaryVideo }) => {
-          if (!activeExportBroll || auxiliaryVideo !== activeExportBroll.video) auxiliaryVideo.pause();
+        exportBrollVideos.forEach((entry) => {
+          if (!entry.isImage && (!activeExportBroll || entry !== activeExportBroll)) (entry.video as HTMLVideoElement).pause();
         });
         if (activeExportBroll) {
-          const targetTime = activeExportBroll.clip.sourceStart + video.currentTime - activeExportBroll.clip.timelineStart;
-          if (Math.abs(activeExportBroll.video.currentTime - targetTime) > .3) activeExportBroll.video.currentTime = targetTime;
-          if (activeExportBroll.video.paused) activeExportBroll.video.play().catch(() => undefined);
-          if (activeExportBroll.video.readyState >= 2) drawCinematicBroll(activeExportBroll.video, { x: activeExportBroll.clip.focusX, y: activeExportBroll.clip.focusY }, activeExportBroll.clip);
+          const focus = { x: activeExportBroll.clip.focusX, y: activeExportBroll.clip.focusY };
+          if (activeExportBroll.isImage) {
+            drawCinematicBroll(activeExportBroll.video, focus, activeExportBroll.clip);
+          } else {
+            const auxiliaryVideo = activeExportBroll.video as HTMLVideoElement;
+            const targetTime = activeExportBroll.clip.sourceStart + video.currentTime - activeExportBroll.clip.timelineStart;
+            if (Math.abs(auxiliaryVideo.currentTime - targetTime) > .3) auxiliaryVideo.currentTime = targetTime;
+            if (auxiliaryVideo.paused) auxiliaryVideo.play().catch(() => undefined);
+            if (auxiliaryVideo.readyState >= 2) drawCinematicBroll(auxiliaryVideo, focus, activeExportBroll.clip);
+          }
         }
         const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
         gradient.addColorStop(0, "rgba(0,0,0,.16)");
@@ -5670,6 +5758,10 @@ export default function Home() {
               <span className="template-thumb cinematic"><i>FILM</i><b>◫</b><small>♪</small></span>
               <span><strong>Cinematográfico</strong><small>B-roll, cortes e efeitos</small></span>
             </button>
+            <button className="template-card cortes-template" onClick={activateBreakdownTemplate}>
+              <span className="template-thumb cortes"><b>◱</b><i>◧</i><small>♪</small></span>
+              <span><strong>Cortes</strong><small>Cutaways + efeitos sobre seu vídeo</small></span>
+            </button>
             {templates.map((template) => (
               <div className="saved-row" key={template.id}>
                 <button className="template-card" onClick={() => loadTemplate(template)}>
@@ -5776,10 +5868,20 @@ export default function Home() {
                   <small>Arraste aqui ou clique para escolher</small>
                 </button>
               )}
-              {activeBroll && <div key={activeBroll.id} className="broll-preview-layer" style={brollPreviewStyle()}><video ref={brollPreviewRef} className="broll-preview" style={{ objectPosition: `${activeBroll.focusX}% ${activeBroll.focusY}%` }} src={activeBroll.url} muted playsInline aria-label={`Vídeo complementar ${activeBroll.name}`} onLoadedMetadata={(event) => {
-                event.currentTarget.currentTime = activeBroll.sourceStart + Math.max(0, currentTime - activeBroll.timelineStart);
-                if (isPlaying) event.currentTarget.play().catch(() => undefined);
-              }} /></div>}
+              {activeBroll && (activeBroll.url
+                ? <div key={activeBroll.id} className="broll-preview-layer" style={brollPreviewStyle()}>
+                    {activeBroll.mediaType === "image"
+                      ? <img className="broll-preview" style={{ objectPosition: `${activeBroll.focusX}% ${activeBroll.focusY}%` }} src={activeBroll.url} alt={activeBroll.name} draggable={false} />
+                      : <video ref={brollPreviewRef} className="broll-preview" style={{ objectPosition: `${activeBroll.focusX}% ${activeBroll.focusY}%` }} src={activeBroll.url} muted playsInline aria-label={`Cutaway ${activeBroll.name}`} onLoadedMetadata={(event) => {
+                          event.currentTarget.currentTime = activeBroll.sourceStart + Math.max(0, currentTime - activeBroll.timelineStart);
+                          if (isPlaying) event.currentTarget.play().catch(() => undefined);
+                        }} />}
+                  </div>
+                : <button key={activeBroll.id} className="broll-preview-layer broll-placeholder-layer" style={brollPreviewStyle()} onClick={(event) => { event.stopPropagation(); openBrollSlotPicker(activeBroll.id); }}>
+                    <span className="broll-placeholder-add">＋</span>
+                    <strong>{activeBroll.slotLabel || "Cutaway"}</strong>
+                    <small>Toque para adicionar imagem ou vídeo</small>
+                  </button>)}
               {activeBroll && cinematicLayout === "split-bar" && <span className={`split-preview-bar ${splitDirection}`} style={splitDirection === "horizontal" ? { top: `${splitPosition}%`, height: `${Math.max(1, splitBarSize / 3)}px`, background: splitBarColor } : { left: `${splitPosition}%`, width: `${Math.max(1, splitBarSize / 3)}px`, background: splitBarColor }} aria-hidden="true" />}
               {focusEditMode && <div className="focus-adjust-overlay" onPointerDown={beginFocusDrag} onPointerMove={moveFocusDrag} onPointerUp={endFocusDrag} onPointerCancel={endFocusDrag}><span>Arraste o vídeo para ajustar o enquadramento</span></div>}
               <div className="stage-shade" />
@@ -6442,6 +6544,7 @@ export default function Home() {
               <button className={`tool-button editor-action ${audioExtracted ? "active" : ""}`} onClick={extractMainAudio} disabled={audioExtracted} title="Separar o áudio do vídeo">♪ Extrair áudio</button>
               <button className={`tool-button editor-action ${importedAudios.length ? "active" : ""}`} onClick={() => importedAudioInputRef.current?.click()} title="Importar música ou locução para tocar por cima do vídeo (pode adicionar vários)">♫ Importar áudio{importedAudios.length ? ` (${importedAudios.length})` : ""}</button>
               <input ref={importedAudioInputRef} type="file" accept="audio/*" multiple hidden onChange={(event) => { Array.from(event.target.files || []).forEach((file) => chooseImportedAudio(file)); event.currentTarget.value = ""; }} />
+              <input ref={brollSlotInputRef} type="file" accept="image/*,video/*" hidden onChange={(event) => { fillBrollSlot(event.target.files?.[0]); event.currentTarget.value = ""; }} />
               {importedAudios.map((track) => <audio key={track.id} ref={(element) => { importedAudioElsRef.current[track.id] = element; }} src={track.url} preload="auto" />)}
               <button className={`tool-button editor-action ${watermarkEnabled ? "active" : ""}`} onClick={toggleWatermark} title="Selo com seu nome, @ e verificado para marcar o vídeo">✔ Minha marca</button>
               <label className="timeline-speed-control" title="Velocidade do vídeo e do áudio"><span>Speed</span><select value={playbackSpeed} onChange={(event) => changePlaybackSpeed(Number(event.target.value))}>{[.25, .5, .75, 1, 1.25, 1.5, 2, 3, 4].map((speed) => <option key={speed} value={speed}>{speed}×</option>)}</select></label>
@@ -6782,7 +6885,7 @@ export default function Home() {
               {overlayVideoClips.map((clip) => (
                 <div
                   key={`${clip.id}-timeline`}
-                  className={`broll-timeline-clip ${timelineSelection?.kind === "broll" && timelineSelection.id === clip.id ? "selected" : ""}`}
+                  className={`broll-timeline-clip ${clip.url ? "" : "placeholder"} ${timelineSelection?.kind === "broll" && timelineSelection.id === clip.id ? "selected" : ""}`}
                   style={{ left: `${(clip.timelineStart / (videoDuration || 1)) * 100}%`, width: `${Math.max(2, (clip.duration / (videoDuration || 1)) * 100)}%`, top: `${(clip.layer ?? 0) * 25 + 3}px` }}
                   role="button"
                   tabIndex={0}
@@ -6790,12 +6893,12 @@ export default function Home() {
                   onPointerMove={moveTimelineClip}
                   onPointerUp={endTimelineClipDrag}
                   onPointerCancel={endTimelineClipDrag}
-                  onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "broll", id: clip.id }); seekVideo(clip.timelineStart); setActivePanel("broll"); }}
+                  onClick={(event) => { event.stopPropagation(); setTimelineSelection({ kind: "broll", id: clip.id }); seekVideo(clip.timelineStart); setActivePanel("broll"); if (!clip.url) openBrollSlotPicker(clip.id); }}
                   onContextMenu={(event) => openContextMenu(event, { kind: "broll", id: clip.id })}
-                  title={`${clip.name}: ${formatTime(clip.sourceStart)} · ${SOUND_EFFECTS.find((effect) => effect.id === clip.sfx)?.name}`}
+                  title={clip.url ? `${clip.name}: ${formatTime(clip.sourceStart)} · ${SOUND_EFFECTS.find((effect) => effect.id === clip.sfx)?.name}` : `${clip.slotLabel || "Cutaway"} vazio · clique para adicionar imagem/vídeo`}
                 >
                   <button className="clip-trim-handle start" aria-label={`Ajustar início de ${clip.name}`} onPointerDown={(event) => beginTimelineClipDrag(event, { kind: "broll", id: clip.id }, "trim-start")} onPointerMove={moveTimelineClip} onPointerUp={endTimelineClipDrag} onPointerCancel={endTimelineClipDrag} />
-                  <span>{clip.name}</span><small>♪ {SOUND_EFFECTS.find((effect) => effect.id === clip.sfx)?.name}</small>
+                  <span>{clip.url ? clip.name : `＋ ${clip.slotLabel || "Cutaway"}`}</span><small>♪ {SOUND_EFFECTS.find((effect) => effect.id === clip.sfx)?.name}</small>
                   <button className="clip-trim-handle end" aria-label={`Ajustar fim de ${clip.name}`} onPointerDown={(event) => beginTimelineClipDrag(event, { kind: "broll", id: clip.id }, "trim-end")} onPointerMove={moveTimelineClip} onPointerUp={endTimelineClipDrag} onPointerCancel={endTimelineClipDrag} />
                 </div>
               ))}

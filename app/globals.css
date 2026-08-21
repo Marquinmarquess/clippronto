@@ -395,6 +395,11 @@ button { color: inherit; }
 .react-speaker-placeholder small { opacity: .7; font-size: 5px; }
 .broll-preview-layer { z-index: 1; pointer-events: none; }
 .video-stage .broll-preview { position: static; width: 100%; height: 100%; pointer-events: none; }
+.broll-placeholder-layer { z-index: 3; pointer-events: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1cqw; border: 0.6cqw dashed rgba(255,255,255,.72); border-radius: 2.4cqw; background: rgba(18,19,26,.55); color: #fff; cursor: pointer; text-align: center; padding: 2cqw; }
+.broll-placeholder-layer:hover { background: rgba(24,26,36,.66); border-color: #fff; }
+.broll-placeholder-layer .broll-placeholder-add { font-size: 9cqw; line-height: 1; font-weight: 300; }
+.broll-placeholder-layer strong { font-size: 3.6cqw; }
+.broll-placeholder-layer small { font-size: 2.5cqw; opacity: .82; max-width: 80%; }
 .split-preview-bar { position: absolute; z-index: 2; display: block; pointer-events: none; transform: translate(-50%, -50%); box-shadow: 0 1px 5px rgba(0,0,0,.28); }
 .split-preview-bar.horizontal { left: 50%; width: 100%; }
 .split-preview-bar.vertical { top: 50%; height: 100%; }
@@ -770,6 +775,11 @@ button { color: inherit; }
 .removed-clip.factory-removed { min-width: 34px; border-color: #f4c94e; background: repeating-linear-gradient(135deg, #725d21 0 4px, #4f421d 4px 8px); color: #fff0a9; font-weight: 850; }
 .broll-track { margin-top: 6px; margin-bottom: 6px; background: #282630; border: 1px dashed #494357; overflow: hidden; cursor: crosshair; }
 .broll-timeline-clip { position: absolute; height: 21px; min-width: 52px; overflow: hidden; border: 1px solid #8974db; border-radius: 4px; padding: 2px 8px; background: linear-gradient(135deg, #4a3c82, #2f2a47); color: #fff; text-align: left; cursor: grab; touch-action: none; }
+.broll-timeline-clip.placeholder { border-style: dashed; color: #ded7ff; background: repeating-linear-gradient(135deg, rgba(137,116,219,.3) 0 8px, rgba(137,116,219,.13) 8px 16px); }
+.template-thumb.cortes { position: relative; display: flex; align-items: center; justify-content: center; gap: 4px; background: linear-gradient(145deg, #241f31, #4a3c86); color: #fff; }
+.template-thumb.cortes b { font-size: 18px; }
+.template-thumb.cortes i { font-size: 13px; font-style: normal; opacity: .82; }
+.template-thumb.cortes small { position: absolute; right: 6px; bottom: 4px; font-size: 8px; color: #d8ff57; }
 .broll-timeline-clip:active { cursor: grabbing; }
 .broll-timeline-clip.selected { z-index: 5; border-color: #eee9ff; outline: 2px solid #9e8bff; }
 .broll-timeline-clip span, .broll-timeline-clip small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
