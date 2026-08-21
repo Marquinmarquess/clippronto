@@ -706,10 +706,12 @@ button { color: inherit; }
 .main-segment-block:hover { filter: brightness(1.12); }
 .main-segment-block.selected { z-index: 2; border-color: #ffffff; outline: 2px solid #6ee2e5; outline-offset: -2px; }
 .main-segment-block.dragging { opacity: .45; filter: saturate(.4); }
-.main-trim-handle { position: absolute; z-index: 5; top: 0; bottom: 0; width: 8px; margin: 0; padding: 0; border: 0; background: rgba(255,255,255,.92); opacity: 0; cursor: ew-resize; touch-action: none; }
-.main-trim-handle.start { left: 0; border-radius: 3px 0 0 3px; }
-.main-trim-handle.end { right: 0; border-radius: 0 3px 3px 0; }
-.main-segment-block:hover .main-trim-handle, .main-segment-block.selected .main-trim-handle { opacity: 1; }
+.main-trim-handle { position: absolute; z-index: 6; top: 0; bottom: 0; width: 16px; margin: 0; padding: 0; border: 0; background: rgba(255,255,255,.14); opacity: .55; cursor: ew-resize; touch-action: none; display: grid; place-items: center; }
+.main-trim-handle::before { content: ""; width: 4px; height: 44%; min-height: 12px; border-radius: 3px; background: #ffffff; box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.4); }
+.main-trim-handle.start { left: 0; border-radius: 4px 0 0 4px; }
+.main-trim-handle.end { right: 0; border-radius: 0 4px 4px 0; }
+.main-segment-block:hover .main-trim-handle, .main-segment-block.selected .main-trim-handle { opacity: 1; background: rgba(255,255,255,.22); }
+.main-trim-handle:hover { background: rgba(110,226,229,.4); }
 .clip-drag-grip { position: absolute; z-index: 2; right: 5px; top: 3px; color: rgba(221,250,251,.72); font-size: 10px; font-style: normal; cursor: grab; }
 .clip-name { position: absolute; z-index: 1; top: 4px; left: 7px; font-size: 8px; color: #c6edef; }
 .fake-waveform { position: absolute; left: 0; right: 0; bottom: 4px; height: 17px; opacity: .6; background: repeating-linear-gradient(90deg, #56d0d1 0 1px, transparent 1px 4px); clip-path: polygon(0 55%, 2% 25%, 4% 70%, 7% 38%, 10% 80%, 14% 18%, 18% 60%, 21% 35%, 25% 77%, 29% 22%, 34% 64%, 38% 30%, 42% 74%, 47% 18%, 52% 69%, 57% 32%, 62% 82%, 67% 25%, 72% 67%, 77% 34%, 82% 76%, 87% 20%, 92% 62%, 96% 38%, 100% 55%, 100% 100%, 0 100%); }
@@ -780,10 +782,11 @@ button { color: inherit; }
 .ranking-timeline-block b { font-size: 7px; }
 .ranking-timeline-block > span { overflow: hidden; font-size: 6px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .ranking-timeline-block small { font-family: var(--font-geist-mono); font-size: 5px; }
-.clip-trim-handle { position: absolute; z-index: 3; top: 0; bottom: 0; width: 7px; border: 0; padding: 0; background: rgba(255,255,255,.82); opacity: 0; cursor: ew-resize; touch-action: none; }
-.clip-trim-handle.start { left: 0; border-radius: 3px 0 0 3px; }
-.clip-trim-handle.end { right: 0; border-radius: 0 3px 3px 0; }
-.ranking-timeline-block:hover .clip-trim-handle, .ranking-timeline-block.selected .clip-trim-handle, .broll-timeline-clip:hover .clip-trim-handle, .broll-timeline-clip.selected .clip-trim-handle { opacity: 1; }
+.clip-trim-handle { position: absolute; z-index: 4; top: 0; bottom: 0; width: 14px; border: 0; padding: 0; background: rgba(255,255,255,.14); opacity: .5; cursor: ew-resize; touch-action: none; display: grid; place-items: center; }
+.clip-trim-handle::before { content: ""; width: 3px; height: 46%; min-height: 8px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+.clip-trim-handle.start { left: 0; border-radius: 4px 0 0 4px; }
+.clip-trim-handle.end { right: 0; border-radius: 0 4px 4px 0; }
+.ranking-timeline-block:hover .clip-trim-handle, .ranking-timeline-block.selected .clip-trim-handle, .broll-timeline-clip:hover .clip-trim-handle, .broll-timeline-clip.selected .clip-trim-handle { opacity: 1; background: rgba(255,255,255,.22); }
 .ranking-timeline-marker { position: absolute; z-index: 2; top: 3px; bottom: 3px; min-width: 31px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 0 4px; border: 1px solid #e0b93f; border-radius: 4px; color: #342a0d; background: linear-gradient(145deg, #ffe47f, #d5aa2d); box-shadow: 0 2px 6px rgba(0,0,0,.28); cursor: pointer; }
 .ranking-timeline-marker:first-child { transform: translateX(0); }
 .ranking-timeline-marker b { font-size: 7px; }

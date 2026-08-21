@@ -1047,7 +1047,8 @@ export default function Home() {
     initialSequence: [FactoryClip, FactoryClip, FactoryClip];
     draftSequence: [FactoryClip, FactoryClip, FactoryClip];
   } | null>(null);
-  const mainTrimDragRef = useRef<{ pointerId: number; index: number; edge: "start" | "end"; startX: number; width: number; initialBoundary: number; minimum: number; maximum: number } | null>(null);
+  const mainTrimDragRef = useRef<{ pointerId: number; index: number; edge: "start" | "end"; startX: number; width: number; initialBoundary: number; minimum: number; maximum: number; splitsSnapshot: number[]; orderSnapshot: number[]; lastBoundary: number } | null>(null);
+  const segmentElsRef = useRef<(HTMLElement | null)[]>([]);
 
   useEffect(() => {
     readLocalTemplates().then(setTemplates).catch(() => setTemplates([]));
@@ -3742,25 +3743,52 @@ export default function Home() {
     event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId);
     const previous = videoSplits[splitIndex - 1] ?? 0;
     const next = videoSplits[splitIndex + 1] ?? videoDuration;
-    mainTrimDragRef.current = { pointerId: event.pointerId, index: splitIndex, edge, startX: event.clientX, width: track.getBoundingClientRect().width, initialBoundary: videoSplits[splitIndex], minimum: previous + .12, maximum: next - .12 };
+    mainTrimDragRef.current = { pointerId: event.pointerId, index: splitIndex, edge, startX: event.clientX, width: track.getBoundingClientRect().width, initialBoundary: videoSplits[splitIndex], minimum: previous + .12, maximum: next - .12, splitsSnapshot: [...videoSplits], orderSnapshot: [...mainSegmentOrder], lastBoundary: videoSplits[splitIndex] };
     setTimelineSelection({ kind: "main", index });
+  }
+
+  // Live-resizes the affected clips straight in the DOM during a trim drag, so it
+  // stays smooth (no per-frame re-render). The real state commits on release.
+  function paintTrimDom(drag: NonNullable<typeof mainTrimDragRef.current>, boundary: number) {
+    const trialSplits = drag.splitsSnapshot.map((time, index) => (index === drag.index ? boundary : time));
+    const bounds = [0, ...trialSplits.filter((time) => time > .05 && time < videoDuration - .05).sort((a, b) => a - b), videoDuration];
+    const segs = bounds.slice(0, -1).map((start, index) => ({ start, end: bounds[index + 1] }));
+    const trialOrder = drag.orderSnapshot.map((start) => (Math.abs(start - drag.initialBoundary) < .08 ? boundary : start));
+    const ordered = trialOrder
+      .map((start) => segs.find((segment) => Math.abs(segment.start - start) < .08))
+      .filter((segment): segment is { start: number; end: number } => Boolean(segment));
+    const missing = segs.filter((segment) => !ordered.some((item) => Math.abs(item.start - segment.start) < .08));
+    const finalOrdered = [...ordered, ...missing];
+    let cumulative = 0;
+    finalOrdered.forEach((segment, index) => {
+      const el = segmentElsRef.current[index];
+      if (el) {
+        el.style.left = `${cumulative / (videoDuration || 1) * 100}%`;
+        el.style.width = `${Math.max(.5, (segment.end - segment.start) / (videoDuration || 1) * 100)}%`;
+      }
+      cumulative += segment.end - segment.start;
+    });
   }
 
   function moveMainTrim(event: React.PointerEvent<HTMLButtonElement>) {
     const drag = mainTrimDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const clientX = event.clientX;
-    scheduleDragUpdate(() => {
-      const boundary = clamp(drag.initialBoundary + (clientX - drag.startX) / Math.max(1, drag.width) * videoDuration, drag.minimum, drag.maximum);
-      setVideoSplits((current) => current.map((time, index) => index === drag.index ? boundary : time));
-      setMainSegmentOrder((current) => current.map((start) => Math.abs(start - drag.initialBoundary) < .08 ? boundary : start));
-    });
+    if (!drag || drag.pointerId !== event.pointerId || !videoDuration) return;
+    event.preventDefault();
+    const boundary = clamp(drag.initialBoundary + (event.clientX - drag.startX) / Math.max(1, drag.width) * videoDuration, drag.minimum, drag.maximum);
+    drag.lastBoundary = boundary;
+    scheduleDragUpdate(() => { if (mainTrimDragRef.current === drag) paintTrimDom(drag, drag.lastBoundary); });
   }
 
   function endMainTrim(event: React.PointerEvent<HTMLButtonElement>) {
-    if (mainTrimDragRef.current?.pointerId !== event.pointerId) return;
+    const drag = mainTrimDragRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
     mainTrimDragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const boundary = drag.lastBoundary;
+    if (Math.abs(boundary - drag.initialBoundary) < .001) return;
+    pushEditorHistory();
+    setVideoSplits((current) => current.map((time, index) => index === drag.index ? boundary : time));
+    setMainSegmentOrder((current) => current.map((start) => Math.abs(start - drag.initialBoundary) < .08 ? boundary : start));
     setToast("Ponto de ligação entre os vídeos ajustado");
   }
 
@@ -6581,6 +6609,7 @@ export default function Home() {
               {orderedVideoSegments.map((segment, index) => (
                 <div
                   key={`${segment.start}-${segment.end}`}
+                  ref={(el) => { segmentElsRef.current[index] = el; }}
                   role="button"
                   tabIndex={0}
                   className={`main-segment-block ${timelineSelection?.kind === "main" && timelineSelection.index === index ? "selected" : ""}`}
